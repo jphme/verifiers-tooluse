@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir huanzhi-utils scikit-learn torch setuptools deeps
 
 # Install flash-attn separately as in README
 RUN pip install --no-cache-dir flash-attn --no-build-isolation
+RUN pip install torchao
 
 # Copy the rest of the code
 COPY . .
