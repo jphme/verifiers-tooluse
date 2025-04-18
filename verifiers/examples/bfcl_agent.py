@@ -33,10 +33,10 @@ if BETA == 0:
     UPDATE_REF_MODEL = False
 else:
     UPDATE_REF_MODEL = True
-MAX_GRAD_NORM = 0.2
+MAX_GRAD_NORM = 0.1
 # steps per global batch (1 on-policy, N-1 off-policy), mu in DeepSeekMath paper
 NUM_ITERATIONS = 2
-GRADIENT_ACCUMULATION_STEPS = 4
+GRADIENT_ACCUMULATION_STEPS = 2
 APPLY_OVERLONG_FILTERING = True
 MAX_COMPLETION_LENGTH = 2048
 PUSH_TO_VIEWER = False
@@ -62,7 +62,7 @@ print(eval_dataset)
 
 rubric = vf_env.get_rubric()
 
-run_name = "bfcl-" + model_name.split("/")[-1].lower() + f"-{MAX_NUM_TURNS}-turns"
+run_name = "bfcl-" + model_name.split("/")[-1].lower() + f"-{MAX_NUM_TURNS}-turns-{NUM_GENERATIONS}-gens"
 if USE_LATEST_TRL:
     run_name += "-latest-trl"
 if USE_DR_GRPO:
@@ -70,7 +70,7 @@ if USE_DR_GRPO:
 if UPDATE_REF_MODEL:
     run_name += "-update-ref-model"
 
-run_name += "-no-format-score"
+run_name += "-format-score"
 run_name += "-new-prompt"
 if TEST_HYPOTHESIS:
     run_name += "-test-hypothesis"
