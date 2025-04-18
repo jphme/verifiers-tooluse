@@ -1,5 +1,14 @@
 
-# Verifiers: Reinforcement Learning with LLMs in Verifiable Environments
+# Adapted Version of Bespokelabs verifiers experiment
+
+Forked from [here](https://github.com/bespokelabsai/verifiers).
+
+
+
+
+
+
+# Original Readme:
 
 This repo is a fork of the [verifiers](https://github.com/willccbb/verifiers) repo. The development of this repo is using an older version of the verifiers repo. We will sync this fork with the latest version of the verifiers repo soon. 
 
