@@ -33,4 +33,4 @@ COPY . .
 RUN chmod +x entrypoint.sh
 
 # Set entrypoint
-ENTRYPOINT ["entrypoint.sh"] 
+ENTRYPOINT ["sh", "entrypoint.sh"] 
