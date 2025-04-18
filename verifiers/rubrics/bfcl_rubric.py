@@ -370,15 +370,11 @@ class BfclRubric(Rubric):
             if debug:
                 print(f"Function Call Score: {func_score}\n")
                 time.sleep(3)
-            
-            #if base_score != state_match_max_score + func_match_max_score:
-            #    if debug:
-            #        print(f"Base Score is not perfect, so giving 0 score, and no format #check.\n")
-            #        time.sleep(3)
-            #    format_score = 0
-            #    base_score = 0
-            # Only check format if base score is perfect
-            #else:
+            base_score = state_score + func_score
+            if base_score != state_match_max_score + func_match_max_score:
+                base_score = base_score/10 # only minimal reward if not correct function call
+
+            # Format Score
             valid_messages = 0
             total_messages = 0
             for msg in trajectory:
@@ -405,8 +401,8 @@ class BfclRubric(Rubric):
             if valid_messages == total_messages:
                 format_score = format_max_score
             else:
-                format_score = format_max_score * (valid_messages / total_messages) if total_messages > 0 else 0
-            base_score = state_score + func_score + format_score
+                format_score = format_max_score * (valid_messages / total_messages) *0.5 if total_messages > 0 else 0
+            base_score += format_score
 
             #NOTE: Experimenting with adding format score to base score
             # base_score += format_score
