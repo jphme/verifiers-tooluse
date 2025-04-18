@@ -1,15 +1,16 @@
 import verifiers as vf
 import os 
 
-model_name = "Qwen/Qwen2.5-7B-Instruct"
+#model_name = "Qwen/Qwen2.5-7B-Instruct"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
 TEST_RUN = False
 PRINT_SAMPLE_COMPLETIONS = True
 NUM_GPUS = 2
-PER_DEVICE_BATCH_SIZE = 1
+PER_DEVICE_BATCH_SIZE = 2
 # Rollouts per prompt
-NUM_GENERATIONS = 1
+NUM_GENERATIONS = 2
 # (NUM_GPUS - 1) * PER_DEVICE_BATCH_SIZE / NUM_GENERATIONS = NUM PROMPT PER DEVICE
 EVAL_DATASET_SIZE = 100
 MAX_STEPS_PER_TURN = 10
@@ -35,7 +36,7 @@ else:
 MAX_GRAD_NORM = 0.2
 # steps per global batch (1 on-policy, N-1 off-policy), mu in DeepSeekMath paper
 NUM_ITERATIONS = 2
-GRADIENT_ACCUMULATION_STEPS = 32
+GRADIENT_ACCUMULATION_STEPS = 8
 APPLY_OVERLONG_FILTERING = True
 MAX_COMPLETION_LENGTH = 2048
 PUSH_TO_VIEWER = False
