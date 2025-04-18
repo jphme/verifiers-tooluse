@@ -29,4 +29,8 @@ RUN pip install --no-cache-dir flash-attn --no-build-isolation
 COPY . .
 
 # Set entrypoint (can be overridden by docker-compose)
-ENTRYPOINT ["accelerate"]
+# Copy and setup entrypoint script
+RUN chmod +x entrypoint.sh
+
+# Set entrypoint
+ENTRYPOINT ["entrypoint.sh"] 
