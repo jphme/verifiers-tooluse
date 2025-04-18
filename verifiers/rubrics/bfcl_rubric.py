@@ -273,11 +273,11 @@ class BfclRubric(Rubric):
     def unified_reward_func(self, completions: List[List[Dict[str, str]]], states: List[Dict[str, Any]], 
                           debug: bool = False, 
                           func_match_max_score: float = 0.5, state_match_max_score: float = 0.5, 
-                          format_max_score: float = 0.2) -> List[float]:
+                          format_max_score: float = 0.1) -> List[float]:
         """
         Combined reward function that checks state matches, function call matches, and format.
         State and function matches contribute 0.5 each to base score.
-        If base score is perfect, format check can add 0.2 more.
+        If base score is perfect, format check can add 0.1 more.
         """
         if debug:
             print(f"Computing Unified Reward\n")
@@ -370,54 +370,44 @@ class BfclRubric(Rubric):
             if debug:
                 print(f"Function Call Score: {func_score}\n")
                 time.sleep(3)
-
-            base_score = state_score + func_score
-            if base_score != state_match_max_score + func_match_max_score:
-                if debug:
-                    print(f"Base Score is not perfect, so giving 0 score, and no format check.\n")
-                    time.sleep(3)
-                format_score = 0
-                base_score = 0
+            
+            #if base_score != state_match_max_score + func_match_max_score:
+            #    if debug:
+            #        print(f"Base Score is not perfect, so giving 0 score, and no format #check.\n")
+            #        time.sleep(3)
+            #    format_score = 0
+            #    base_score = 0
             # Only check format if base score is perfect
-            else:
-                if debug:
-                    print(f"Base Score is perfect, checking format\n")
-                    time.sleep(3)
-                valid_messages = 0
-                total_messages = 0
-                for msg in trajectory:
-                    if msg['role'] == 'assistant':
+            #else:
+            valid_messages = 0
+            total_messages = 0
+            for msg in trajectory:
+                if msg['role'] == 'assistant':
+                    if debug:
+                        print(f"Checking Message: {msg['content']}")
+                        time.sleep(3)
+                    total_messages += 1
+                    parsed = self.parser.parse(msg['content'])
+                    if debug:
+                        print(f"Parsed: {parsed}")
+                        time.sleep(3)
+                    # Must have either tool content or task status or reasoning for all messages
+                    if (hasattr(parsed, 'tool') and parsed.tool is not None) or (hasattr(parsed, 'reasoning') and parsed.reasoning is not None) or ("<TASK_FINISHED>" in msg['content'] or "<TASK_ERROR>" in msg['content']):
+                        valid_messages += 1
                         if debug:
-                            print(f"Checking Message: {msg['content']}")
+                            print(f"Valid: True")
                             time.sleep(3)
-                        total_messages += 1
-                        parsed = self.parser.parse(msg['content'])
+                    else:
                         if debug:
-                            print(f"Parsed: {parsed}")
+                            print(f"Valid: False")
                             time.sleep(3)
-                        # Must have reasoning content
-                        if not hasattr(parsed, 'reasoning') or parsed.reasoning is None:
-                            if debug:
-                                print(f"Valid: False")
-                                time.sleep(3)
-                            continue
-                        
-                        # Must have either tool content or task status
-                        if (hasattr(parsed, 'tool') and parsed.tool is not None) or ("<TASK_FINISHED>" in msg['content'] or "<TASK_ERROR>" in msg['content']):
-                            valid_messages += 1
-                            if debug:
-                                print(f"Valid: True")
-                                time.sleep(3)
-                        else:
-                            if debug:
-                                print(f"Valid: False")
-                                time.sleep(3)
 
-                if valid_messages == total_messages:
-                    format_score = format_max_score
-                else:
-                    format_score = 0
-                # format_score = format_max_score * (valid_messages / total_messages) if total_messages > 0 else 0
+            if valid_messages == total_messages:
+                format_score = format_max_score
+            else:
+                format_score = format_max_score * (valid_messages / total_messages) if total_messages > 0 else 0
+            base_score = state_score + func_score + format_score
+
             #NOTE: Experimenting with adding format score to base score
             # base_score += format_score
 
