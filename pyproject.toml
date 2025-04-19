@@ -24,3 +24,23 @@ dependencies = [
     "brave-search>=0.1.8",
     "loguru",
 ]
+
+[tool.ruff]
+# Add any global Ruff settings here if needed (e.g., exclude, line-length)
+# line-length = 88
+# target-version = "py311"
+
+[tool.ruff.lint]
+# Disable import sorting rules (isort, code 'I')
+# If you have other rules selected/ignored, merge 'I' into the ignore list.
+# If 'select' is not defined, Ruff uses defaults. Add 'ignore' if it doesn't exist.
+ignore = ["I"]
+# Add other lint configurations here. For example, to keep default rules + ignore isort:
+# select = ["E4", "E7", "E9", "F"] # Default selection
+# ignore = ["I"]
+
+# [tool.ruff.format] # Remove this section entirely if you don't want to configure formatting.
+# Add any specific formatting rules here if you *do* run `ruff format`
+# e.g., quote-style = "single"
+
+

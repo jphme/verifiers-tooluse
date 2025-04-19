@@ -6,34 +6,173 @@ import json
 import time
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Union
 
-from datasets import Dataset
+import numpy as np
+from datasets import (
+    Dataset,
+    DatasetDict,  # type: ignore
+)
 from huanzhi_utils import load_file
 from loguru import logger
+from sklearn.model_selection import train_test_split
 from trl.trainer.grpo_trainer import RewardFunc
 
 from verifiers.envs.multistep_env import MultiStepEnv
 from verifiers.envs.tool_env import infer_schema_from_function
 from verifiers.parsers import XMLParser
-from verifiers.prompts import BFCL_PROMPT
 from verifiers.rubrics import BfclRubric
-from verifiers.tools.bfcl_tools import INVOLVED_CLASS_TO_FUNC_DOC_PATH
-from verifiers.utils import preprocess_dataset
+from verifiers.tools.bfcl_tools import (
+    INVOLVED_CLASS_TO_FUNC_DOC_PATH,
+    construct_tools_from_involved_classes,
+)
+from verifiers.utils.data_utils import preprocess_dataset
 
 from ..imports import LLM, SamplingParams  # type: ignore
 
+# New prompt format combining instructions and user query
+BFCL_INTHINKING_USER_PROMPT = """You are an expert in composing functions. You are given a question from a user and a set of possible functions. Based on the question, you will need to make one or more function/tool calls to complete the task.
+You have access to the following tools to help solve the task:
 
-class BfclEnv(MultiStepEnv):
+{tools}
+
+For each step:
+1. Start with a step-by-step thinking process inside <think> </think> tags to think through the problem.
+2. If needed, use tools by writing one or more JSON commands as a list inside <tool> </tool> tags. Each item in the list should have a name and args key, with args being a dictionary.
+   example: <tool> [{{"name": func_1_name, "args": {{arg1: value1, arg2: value2}}}}, {{"name": func_2_name, "args": {{arg3: value3, arg4: value4}}}}] </tool>
+   Tools expect specific JSON input formats. Do not make up tools or arguments that aren't listed.
+3. After you have used the tools, you will see the tool outputs inside <tool_result> </tool_result> tags in the same order from the tool.
+4. If you believe the current task is completed and no more tool, summarize your progresses and output <TASK_FINISHED> in the end of your response to terminate the conversation.
+5. Otherwise if you believe the task is not able to be completed, summarize what is problematic and output <TASK_ERROR> in the end of your response to terminate the conversation.
+
+Here is the user question:
+{user_query}"""
+
+
+def format_bfcl_prompt(
+    system_prompt: str | None = None,
+    involved_classes: List[str] | None = None,
+    user_question: str | None = None,
+) -> List[Dict[str, str]]:
+    messages = []
+    tools = construct_tools_from_involved_classes(involved_classes)
+    if system_prompt:
+        messages.append(
+            {"role": "system", "content": system_prompt.format(tools=tools)}
+        )
+    messages.append({"role": "user", "content": user_question})
+    return messages
+
+
+def preprocess_bfcl_dataset(
+    system_prompt: str | None = None, curriculum_learning: bool = False
+) -> Dataset:
+    # TODO: Change to local path
+    multi_turn_base_data = load_file(
+        "verifiers/berkeley-function-call-leaderboard/data/BFCL_v3_multi_turn_base.json"
+    )
+    multi_turn_base_answer = load_file(
+        "verifiers/berkeley-function-call-leaderboard/data/possible_answer/BFCL_v3_multi_turn_base.json"
+    )
+
+    # Reprocess the columns into serializable format and add num_turns
+    for i in range(len(multi_turn_base_data)):
+        question_data = multi_turn_base_data[i]["question"]
+        ground_truth = multi_turn_base_answer[i]["ground_truth"]
+        initial_config = multi_turn_base_data[i]["initial_config"]
+
+        # Assert number of turns matches between question and ground truth
+        assert len(question_data) == len(ground_truth), (
+            f"Mismatch in number of turns for entry {i}"
+        )
+
+        multi_turn_base_data[i]["num_turns"] = len(question_data)
+        multi_turn_base_data[i]["question"] = json.dumps(question_data)
+        multi_turn_base_data[i]["initial_config"] = json.dumps(initial_config)
+        multi_turn_base_data[i]["answer"] = json.dumps(ground_truth)
+
+    if curriculum_learning:
+        # Create curriculum data with copies for each turn
+        curriculum_data = []
+        for entry in multi_turn_base_data:
+            questions = json.loads(entry["question"])
+            answers = json.loads(entry["answer"])
+
+            # Create copies for each turn number
+            for j in range(1, entry["num_turns"] + 1):
+                curriculum_entry = copy.deepcopy(entry)
+                curriculum_entry["question"] = json.dumps(copy.deepcopy(questions[:j]))
+                curriculum_entry["answer"] = json.dumps(copy.deepcopy(answers[:j]))
+                curriculum_entry["num_turns"] = j
+                curriculum_data.append(curriculum_entry)
+        multi_turn_base_data = curriculum_data
+
+    dataset = Dataset.from_list(multi_turn_base_data)
+    dataset = dataset.map(
+        lambda x: {
+            "prompt": format_bfcl_prompt(
+                system_prompt=system_prompt,
+                involved_classes=x["involved_classes"],
+                user_question=json.dumps(json.loads(x["question"])[0][0]["content"]),
+            ),
+            # NOTE:: user_question_bank is a list of lists
+            "user_question_bank": json.dumps(json.loads(x["question"])[1:])
+            if len(json.loads(x["question"])) > 1
+            else json.dumps([]),
+            "ground_truth_bank": copy.deepcopy(x["answer"]),
+            "num_turns": x["num_turns"],
+            "id": x["id"],
+        }
+    )
+    for i in range(len(dataset)):
+        ground_truth_bank = json.loads(dataset[i]["ground_truth_bank"])
+        user_question_bank = json.loads(dataset[i]["user_question_bank"])
+        assert len(ground_truth_bank) == len(user_question_bank) + 1, (
+            f"Length mismatch at index {i}: ground_truth_bank ({len(ground_truth_bank)}) != user_question_bank ({len(user_question_bank)})"
+        )
+    # Get unique IDs and split those first
+    unique_ids = sorted(list(set(dataset["id"])))
+    train_ids, test_ids = train_test_split(unique_ids, test_size=0.5, random_state=42)
+
+    # Filter dataset based on IDs
+    train_dataset = dataset.filter(lambda x: x["id"] in train_ids)
+    test_dataset = dataset.filter(lambda x: x["id"] in test_ids)
+
+    if curriculum_learning:
+        # Sort both splits by num_turns while preserving randomization within same num_turns
+        def sort_by_turns(split):
+            df = split.to_pandas()
+            # Set seed for reproducibility
+            rng = np.random.RandomState(42)
+            # Randomize order within same num_turns by adding small random values
+            df["sort_key"] = df["num_turns"] + rng.random(len(df)) * 0.1
+            df = df.sort_values("sort_key")
+            df = df.drop("sort_key", axis=1)
+            return Dataset.from_pandas(df)
+
+        train_dataset = sort_by_turns(train_dataset)
+        test_dataset = sort_by_turns(test_dataset)
+
+    dataset_dict = DatasetDict({"train": train_dataset, "test": test_dataset})
+
+    # assert train_dataset and test_dataset have non-overlapping ids
+    assert len(set(train_dataset["id"]) & set(test_dataset["id"])) == 0, (
+        "Train and test datasets have overlapping ids"
+    )
+
+    return dataset_dict
+
+
+class BfclITEnv(MultiStepEnv):
     def __init__(
         self,
         dataset: str = "bfcl",
         tools: List[Callable] = [],
-        system_prompt: str = BFCL_PROMPT,
         few_shot: List[Dict[str, str]] = [],
         sampling_args={
             "stop": [
                 "</tool>",
                 "<TASK_FINISHED>",
                 "<TASK_ERROR>",
+                "</think>",
             ],
             "include_stop_str_in_output": True,
         },
@@ -46,7 +185,6 @@ class BfclEnv(MultiStepEnv):
     ):
         logger.info("Initializing MultiStepEnv")
         super().__init__(
-            system_prompt=system_prompt,
             few_shot=few_shot,
             mask_env_response=mask_env_response,
             sampling_args=sampling_args,
@@ -70,10 +208,6 @@ class BfclEnv(MultiStepEnv):
         self.tools = {tool.__name__: tool for tool in tools}
         # print(self.tools)
 
-        # Format the system prompt with tool descriptions
-        # tool_descriptions = format_tool_descriptions(self.tool_schemas)
-        # formatted_prompt = system_prompt.format(tools=tool_descriptions)
-
         self.dataset_name = dataset
         self.curriculum_learning = curriculum_learning
         # APPARENTLY NOT NEEDED
@@ -94,7 +228,7 @@ class BfclEnv(MultiStepEnv):
         logger.info("Initializing Scoring Rubric")
         self.rubric = BfclRubric()
         logger.info("Initializing LLM + Env Parsers")
-        self.llm_parser = XMLParser(fields=["reasoning", "tool"])
+        self.llm_parser = XMLParser(fields=["think", "tool"])
         self.env_parser = XMLParser(fields=["tool_result"])
         self.use_latest_trl = use_latest_trl
         self.message_end_id = 151645
@@ -104,8 +238,6 @@ class BfclEnv(MultiStepEnv):
             self.dataset = preprocess_dataset(
                 dataset_name=self.dataset_name,
                 split="train",
-                system_prompt=self.system_prompt,
-                few_shot=self.few_shot,
                 curriculum_learning=self.curriculum_learning,
             )
         if max_num_turns > 0:
@@ -125,8 +257,6 @@ class BfclEnv(MultiStepEnv):
             self.eval_dataset = preprocess_dataset(
                 dataset_name=self.dataset_name,
                 split="test",
-                system_prompt=self.system_prompt,
-                few_shot=self.few_shot,
                 curriculum_learning=self.curriculum_learning,
             )
         if max_num_turns > 0:
@@ -197,8 +327,8 @@ class BfclEnv(MultiStepEnv):
         user_question_bank = json.loads(state["dataset_row"]["user_question_bank"])
         llm_response = messages[-1]["content"]
         # If reasoning is present then remove it, only check for TASK_ERROR in the solution part
-        if "<reasoning>" in llm_response and "</reasoning>" in llm_response:
-            llm_response = llm_response.split("</reasoning>")[1]
+        if "<think>" in llm_response and "</think>" in llm_response:
+            llm_response = llm_response.split("</think>")[1]
         if (
             (
                 (len(user_question_bank) == 0)
@@ -436,13 +566,13 @@ class BfclEnv(MultiStepEnv):
                 result, state = self.call_tool(parsed.tool, state=state, debug=debug)
                 if len(result) > 0:
                     tool_result = f"<tool_result> {result} </tool_result>"
-                    return {"role": "system", "content": tool_result}, state
+                    return {"role": "tool", "content": tool_result}, state
                 else:
                     all_func_call_results = [
                         "Error: Tool execution returned empty output."
                     ]
                     tool_result = f"<tool_result> {json.dumps(all_func_call_results)} </tool_result>"
-                    return {"role": "system", "content": tool_result}, state
+                    return {"role": "tool", "content": tool_result}, state
             else:
                 all_func_call_results = [
                     "Error: Function call not found in current assistant response. Tool command must be one list of JSON objects. Please ensure correct formatting. If task is finished, please respond with the <TASK_FINISHED> tag. If task is problematic, please respond with the <TASK_ERROR> tag."
@@ -450,7 +580,7 @@ class BfclEnv(MultiStepEnv):
                 tool_result = (
                     f"<tool_result> {json.dumps(all_func_call_results)} </tool_result>"
                 )
-                return {"role": "system", "content": tool_result}, state
+                return {"role": "tool", "content": tool_result}, state
         except Exception as e:
             if "not expected" in str(e).lower():
                 raise Exception(f"Error in env_response is not expected!! Error: {e}")
@@ -460,7 +590,7 @@ class BfclEnv(MultiStepEnv):
             tool_result = (
                 f"<tool_result> {json.dumps(all_func_call_results)} </tool_result>"
             )
-            return {"role": "system", "content": tool_result}, state
+            return {"role": "tool", "content": tool_result}, state
 
     def step(
         self,
@@ -504,10 +634,11 @@ class BfclEnv(MultiStepEnv):
             if len(states[j]["prompt_ids"]) == 0:
                 states[j]["prompt_ids"] = llm_responses[i].prompt_token_ids
             llm_response = llm_responses[i].outputs[0].text
-            if "<reasoning>" in llm_response and "</reasoning>" in llm_response:
-                llm_response_without_reasoning = llm_response.split("</reasoning>")[1]
+            # Adjust history based on <think> tag
+            if "<think>" in llm_response and "</think>" in llm_response:
+                llm_response_without_think = llm_response.split("</think>")[1]
                 states[j]["multi_turn_history"].append(
-                    {"role": "assistant", "content": llm_response_without_reasoning}
+                    {"role": "assistant", "content": llm_response_without_think}
                 )
             else:
                 states[j]["multi_turn_history"].append(
@@ -642,7 +773,8 @@ class BfclEnv(MultiStepEnv):
                     state=states[j], debug=(debug and (j == 0))
                 )
                 states[j]["messages"].append(env_response)
-                states[j]["multi_turn_history"].append(env_response)
+                # Do not add tool responses to multi_turn_history
+                # states[j]["multi_turn_history"].append(env_response)
                 if debug:
                     if j == 0:
                         print(f"env_response: {states[j]['messages'][-1]['content']}")
@@ -759,10 +891,9 @@ class BfclEnv(MultiStepEnv):
             }
             for i, m in enumerate(prompts)
         ]
-        assert len(states[0]["messages"]) == 2
         if debug:
-            print(f"System Prompt: {states[0]['messages'][0]['content']}")
-            print(f"User Prompt: {states[0]['messages'][1]['content']}")
+            # Print the first (and only) user prompt message
+            print(f"Initial User Prompt: {states[0]['messages'][0]['content']}")
             print(f"Number of Rollouts: {len(states)}")
             time.sleep(3)
         # main loop
