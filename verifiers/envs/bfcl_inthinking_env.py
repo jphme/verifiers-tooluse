@@ -19,7 +19,7 @@ from trl.trainer.grpo_trainer import RewardFunc
 from verifiers.envs.multistep_env import MultiStepEnv
 from verifiers.envs.tool_env import infer_schema_from_function
 from verifiers.parsers import XMLParser
-from verifiers.rubrics import BfclRubric
+from verifiers.rubrics.bfcl_inthinking_rubric import BfclITRubric
 from verifiers.tools.bfcl_tools import (
     INVOLVED_CLASS_TO_FUNC_DOC_PATH,
     construct_tools_from_involved_classes,
@@ -226,7 +226,7 @@ class BfclITEnv(MultiStepEnv):
         self.max_num_turns = max_num_turns
         self.max_steps_per_turn = max_steps_per_turn
         logger.info("Initializing Scoring Rubric")
-        self.rubric = BfclRubric()
+        self.rubric = BfclITRubric()
         logger.info("Initializing LLM + Env Parsers")
         self.llm_parser = XMLParser(fields=["think", "tool"])
         self.env_parser = XMLParser(fields=["tool_result"])

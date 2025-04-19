@@ -1,7 +1,9 @@
-import verifiers as vf
-import os 
+import os
 
-#model_name = "Qwen/Qwen2.5-7B-Instruct"
+import verifiers as vf
+from verifiers.envs import BfclEnv
+
+# model_name = "Qwen/Qwen2.5-7B-Instruct"
 model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
@@ -16,7 +18,7 @@ EVAL_DATASET_SIZE = 50
 MAX_STEPS_PER_TURN = 10
 CURRICULUM_LEARNING = True
 MAX_TURNS_ONLY = True
-MAX_NUM_TURNS = 1 # 4 turns is almost max
+MAX_NUM_TURNS = 1  # 4 turns is almost max
 DEBUG_GENERATE = False
 DEBUG_REWARDS = False
 EVAL_STEPS = 50
@@ -46,7 +48,7 @@ else:
     os.environ["CURATOR_VIEWER"] = "0"
 
 # Initialize tool environment for GSM8K
-vf_env = vf.BfclEnv(
+vf_env = BfclEnv(
     dataset="bfcl",
     tools=[],
     max_num_turns=MAX_NUM_TURNS,
@@ -56,13 +58,19 @@ vf_env = vf.BfclEnv(
 )
 
 train_dataset = vf_env.get_dataset(max_num_turns=MAX_NUM_TURNS)
-eval_dataset = vf_env.get_eval_dataset(max_num_turns=MAX_NUM_TURNS, max_turn_only=MAX_TURNS_ONLY)
+eval_dataset = vf_env.get_eval_dataset(
+    max_num_turns=MAX_NUM_TURNS, max_turn_only=MAX_TURNS_ONLY
+)
 print(train_dataset)
 print(eval_dataset)
 
 rubric = vf_env.get_rubric()
 
-run_name = "bfcl-" + model_name.split("/")[-1].lower() + f"-{MAX_NUM_TURNS}-turns-{NUM_GENERATIONS}-gens"
+run_name = (
+    "bfcl-"
+    + model_name.split("/")[-1].lower()
+    + f"-{MAX_NUM_TURNS}-turns-{NUM_GENERATIONS}-gens"
+)
 if USE_LATEST_TRL:
     run_name += "-latest-trl"
 if USE_DR_GRPO:
@@ -85,10 +93,7 @@ if TEST_RUN:
     run_name += "-test-run"
 run_name += f"-beta-{BETA}"
 
-training_args = vf.get_default_grpo_config(
-    run_name=run_name,
-    num_gpus=NUM_GPUS
-)
+training_args = vf.get_default_grpo_config(run_name=run_name, num_gpus=NUM_GPUS)
 training_args.num_train_epochs = NUM_EPOCHS
 training_args.num_generations = NUM_GENERATIONS
 training_args.max_completion_length = MAX_COMPLETION_LENGTH
@@ -139,4 +144,4 @@ trainer = vf.GRPOEnvTrainer(
     print_sample_completions=PRINT_SAMPLE_COMPLETIONS,
 )
 
-trainer.train() 
+trainer.train()

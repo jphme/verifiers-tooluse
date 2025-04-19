@@ -15,7 +15,7 @@ from verifiers.envs.multistep_env import MultiStepEnv
 from verifiers.envs.tool_env import infer_schema_from_function
 from verifiers.parsers import XMLParser
 from verifiers.prompts import BFCL_PROMPT
-from verifiers.rubrics import BfclRubric
+from verifiers.rubrics.bfcl_rubric import BfclRubric
 from verifiers.tools.bfcl_tools import INVOLVED_CLASS_TO_FUNC_DOC_PATH
 from verifiers.utils import preprocess_dataset
 

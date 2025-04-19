@@ -63,7 +63,7 @@ from verifiers.rubrics import Rubric
 #               generation_params={"temperature": 0.0})
 
 
-class BfclRubric(Rubric):
+class BfclITRubric(Rubric):
     def __init__(
         self,
         parser: XMLParser = XMLParser(fields=["reasoning", "tool"]),

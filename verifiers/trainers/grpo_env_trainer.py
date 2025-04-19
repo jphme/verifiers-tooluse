@@ -24,7 +24,7 @@ from trl.extras.profiling import profiling_decorator
 from trl.import_utils import is_rich_available
 from trl.trainer.utils import pad
 
-from verifiers.envs.bfcl_env import BfclEnv
+from verifiers.envs.bfcl_inthinking_env import BfclITEnv
 from verifiers.envs.environment import Environment
 from verifiers.tools.bfcl_tools import INVOLVED_CLASS_TO_FUNC_DOC_PATH
 from verifiers.utils.logging_utils import print_prompt_completions_sample
@@ -182,7 +182,7 @@ class GRPOEnvTrainer(GRPOTrainer):
         all_inputs = gather_object(inputs)
 
         if self.accelerator.is_main_process:
-            if isinstance(self.env, BfclEnv):
+            if isinstance(self.env, BfclITEnv):
                 env_result = self.env.generate(
                     prompts=all_prompts,
                     llm=self.llm,
@@ -339,7 +339,7 @@ class GRPOEnvTrainer(GRPOTrainer):
             # Repeat all input columns (but "prompt" and "completion") to match the number of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]  # type: ignore
             reward_kwargs = {key: [example[key] for example in inputs] for key in keys}  # type: ignore
-            if isinstance(self.env, BfclEnv):
+            if isinstance(self.env, BfclITEnv):
                 output_reward_func = reward_func(
                     completions=completions, states=states, debug=self.debug_rewards
                 )

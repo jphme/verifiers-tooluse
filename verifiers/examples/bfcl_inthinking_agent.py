@@ -1,6 +1,7 @@
 import os
 
 import verifiers as vf
+from verifiers.envs import BfclITEnv
 
 model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
@@ -46,7 +47,7 @@ else:
     os.environ["CURATOR_VIEWER"] = "0"
 
 # Initialize tool environment for GSM8K
-vf_env = vf.BfclEnv(
+vf_env = BfclITEnv(
     dataset="bfcl",
     tools=[],
     max_num_turns=MAX_NUM_TURNS,
