@@ -139,4 +139,4 @@ trainer = vf.GRPOEnvTrainer(
     print_sample_completions=PRINT_SAMPLE_COMPLETIONS,
 )
 
-trainer.train() 
+trainer.train(resume_from_checkpoint=True) # TODO: REMOVE FOR NEW TRAINING
