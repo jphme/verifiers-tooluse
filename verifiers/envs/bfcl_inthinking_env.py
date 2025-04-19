@@ -24,7 +24,6 @@ from verifiers.tools.bfcl_tools import (
     INVOLVED_CLASS_TO_FUNC_DOC_PATH,
     construct_tools_from_involved_classes,
 )
-from verifiers.utils.data_utils import preprocess_dataset
 
 from ..imports import LLM, SamplingParams  # type: ignore
 
@@ -48,22 +47,24 @@ Here is the user question:
 
 
 def format_bfcl_prompt(
-    system_prompt: str | None = None,
     involved_classes: List[str] | None = None,
     user_question: str | None = None,
 ) -> List[Dict[str, str]]:
     messages = []
     tools = construct_tools_from_involved_classes(involved_classes)
-    if system_prompt:
-        messages.append(
-            {"role": "system", "content": system_prompt.format(tools=tools)}
-        )
-    messages.append({"role": "user", "content": user_question})
+    messages.append(
+        {
+            "role": "user",
+            "content": BFCL_INTHINKING_USER_PROMPT.format(
+                tools=tools, user_query=user_question
+            ),
+        }
+    )
     return messages
 
 
 def preprocess_bfcl_dataset(
-    system_prompt: str | None = None, curriculum_learning: bool = False
+    curriculum_learning: bool = False, split: str = "train"
 ) -> Dataset:
     # TODO: Change to local path
     multi_turn_base_data = load_file(
@@ -109,7 +110,6 @@ def preprocess_bfcl_dataset(
     dataset = dataset.map(
         lambda x: {
             "prompt": format_bfcl_prompt(
-                system_prompt=system_prompt,
                 involved_classes=x["involved_classes"],
                 user_question=json.dumps(json.loads(x["question"])[0][0]["content"]),
             ),
@@ -158,7 +158,7 @@ def preprocess_bfcl_dataset(
         "Train and test datasets have overlapping ids"
     )
 
-    return dataset_dict
+    return dataset_dict[split]
 
 
 class BfclITEnv(MultiStepEnv):
@@ -172,7 +172,7 @@ class BfclITEnv(MultiStepEnv):
                 "</tool>",
                 "<TASK_FINISHED>",
                 "<TASK_ERROR>",
-                "</think>",
+                # "</think>",
             ],
             "include_stop_str_in_output": True,
         },
@@ -235,8 +235,7 @@ class BfclITEnv(MultiStepEnv):
 
     def get_dataset(self, max_num_turns: int = -1, **kwargs: Any) -> Dataset:
         if self.dataset is None:
-            self.dataset = preprocess_dataset(
-                dataset_name=self.dataset_name,
+            self.dataset = preprocess_bfcl_dataset(
                 split="train",
                 curriculum_learning=self.curriculum_learning,
             )
@@ -254,8 +253,7 @@ class BfclITEnv(MultiStepEnv):
         **kwargs: Any,
     ) -> Dataset | None:
         if self.eval_dataset is None:
-            self.eval_dataset = preprocess_dataset(
-                dataset_name=self.dataset_name,
+            self.eval_dataset = preprocess_bfcl_dataset(
                 split="test",
                 curriculum_learning=self.curriculum_learning,
             )
