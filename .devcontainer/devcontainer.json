@@ -1,0 +1,17 @@
+{
+    "name": "verifiers-tooluse-dev",
+    "dockerComposeFile": [
+        "../docker-compose.yml"
+    ],
+    "service": "trainer",
+    "workspaceFolder": "/workspace",
+    "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter"
+    ],
+    "settings": {
+        "python.defaultInterpreterPath": "/opt/conda/bin/python"
+    },
+    "forwardPorts": [8888],
+    "postCreateCommand": "pip install ipykernel ipywidgets jupyter"
+}
