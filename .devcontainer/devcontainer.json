@@ -9,7 +9,8 @@
     "command": ["/bin/sh", "-c", "while sleep 1000; do :; done"],
     "extensions": [
         "ms-python.python",
-        "ms-toolsai.jupyter"
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff"
     ],
     "settings": {
         "python.defaultInterpreterPath": "/opt/conda/bin/python"
