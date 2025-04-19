@@ -62,22 +62,63 @@ Follow this precise workflow:
 Here is the user question:
 {user_query}"""
 
+FEW_SHOT_EXAMPLE = [
+    {
+        "role": "user",
+        "content": BFCL_INTHINKING_USER_PROMPT.format(
+            tools="""{"name": "get_user_id", "description": "Get user ID from user name.", "parameters": {"type": "dict", "properties": {"user": {"type": "string"}}, "required": ["user"]}, "response": {"type": "dict", "properties": {"user_id": {"type": "string"}}}}
+{"name": "send_message", "description": "Send a message to a user.", "parameters": {"type": "dict", "properties": {"receiver_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["receiver_id", "message"]}, "response": {"type": "dict", "properties": {"sent_status": {"type": "boolean"}, "message_id": {"type": "integer"}}}}""",
+            user_query="Can you send a welcome message to the new user Bob?"
+        )
+    },
+    {
+        "role": "assistant",
+        "content": """<think>
+The user wants me to send a welcome message to a user named "Bob".
+To use the `send_message` tool, I need the `receiver_id` for Bob.
+I don't have Bob's ID yet.
+My plan is:
+1. Use the `get_user_id` tool to find Bob's user ID.
+2. Use the `send_message` tool with the obtained ID and a welcome message.
+First step is to get the user ID.
+<tool>[{"name": "get_user_id", "args": {"user": "Bob"}}]</tool><tool_result>["Function Call {"name": "get_user_id", "args": {"user": "Bob"}} Succeeded. Result: {'user_id': 'USR123'}"]</tool_result>
+Okay, the `get_user_id` tool successfully returned Bob's user ID as 'USR123'.
+Now I have the `receiver_id` needed for the next step.
+My plan was to send a welcome message. I will now use the `send_message` tool.
+I'll compose a simple welcome message.
+<tool>[{"name": "send_message", "args": {"receiver_id": "USR123", "message": "Welcome to the team, Bob!"}}]</tool><tool_result>["Function Call {'name': 'send_message', 'args': {'receiver_id': 'USR123', 'message': 'Welcome to the team, Bob!'}} Succeeded. Result: {'sent_status': True, 'message_id': 500}"]
+</tool_result>
+The `send_message` tool confirmed that the message was sent successfully (sent_status: True).
+I have now completed all the steps required by the user's request.
+I should inform the user that the message has been sent.
+</think>
+I have sent a welcome message to Bob (User ID: USR123).
+<TASK_FINISHED>"""
+    }
+]
 
+# Modify format_bfcl_prompt to potentially include the few-shot example
 def format_bfcl_prompt(
     involved_classes: List[str] | None = None,
     user_question: str | None = None,
+    include_few_shot: bool = False, # Add flag
 ) -> List[Dict[str, str]]:
     messages = []
+    if include_few_shot:
+        # IMPORTANT: Deep copy the few-shot example to avoid modification issues
+        messages.extend(copy.deepcopy(FEW_SHOT_EXAMPLE))
+
+    # Construct the current query prompt
     tools = construct_tools_from_involved_classes(involved_classes)
-    # Combine instructions, tools, and query into the first user message
-    messages.append(
-        {
-            "role": "user",
-            "content": BFCL_INTHINKING_USER_PROMPT.format(
-                tools=tools, user_query=user_question
-            ),
-        }
-    )
+    current_query_message = {
+        "role": "user",
+        "content": BFCL_INTHINKING_USER_PROMPT.format(
+            tools=tools, user_query=user_question
+        ),
+    }
+
+    # Append the actual query *after* the few-shot example
+    messages.append(current_query_message)
     return messages
 
 
