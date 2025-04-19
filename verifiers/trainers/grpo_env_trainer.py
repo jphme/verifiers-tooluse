@@ -40,6 +40,17 @@ if is_wandb_available():
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
 
+def fix_r1_chat_template(chat_template: str) -> str:
+    #the default chat template removes the think part of the think-step-response chain
+    # we need this to inject into chain-of-thought
+    problematic_part = """{% set content = message['content'] %}{% if '</think>' in content %}{% set content = content.split('</think>')[-1] %}{% endif %}{{'<｜Assistant｜>' + content + '<｜end▁of▁sentence｜>'}}"""
+    # --- Define the corrected part ---
+    corrected_part = """{% set content = message['content'] %}{{'<｜Assistant｜>' + content + ''}}"""
+    modified_template = chat_template.replace(problematic_part, corrected_part)
+    assert modified_template != chat_template, "Chat template not modified"
+    return modified_template
+
+
 class GRPOEnvTrainer(GRPOTrainer):
     def __init__(
         self,
@@ -84,6 +95,9 @@ class GRPOEnvTrainer(GRPOTrainer):
         )
         self.env = env
         # Ensure the env also has the tokenizer
+        self.tokenizer.chat_template = fix_r1_chat_template(self.tokenizer.chat_template)
+        self.llm.set_tokenizer(self.tokenizer)
+        logger.info("Chat Template fixed")
         if hasattr(self.env, 'tokenizer') and self.env.tokenizer is None:
             self.env.tokenizer = self.tokenizer
         elif not hasattr(self.env, 'tokenizer'):

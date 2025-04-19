@@ -81,80 +81,74 @@ def preprocess_bfcl_dataset(
     )
 
     # Reprocess the columns into serializable format and add num_turns
-    processed_data = []
     for i in range(len(multi_turn_base_data)):
-        entry_data = multi_turn_base_data[i]
-        entry_answer = multi_turn_base_answer[i]
+        question_data = multi_turn_base_data[i]["question"]
+        ground_truth = multi_turn_base_answer[i]["ground_truth"]
+        initial_config = multi_turn_base_data[i]["initial_config"]
 
-        # --- Handle Multi-Turn Tasks ---
-        # If a task has multiple user turns, create separate data points for each turn.
-        # Each data point will contain only the *first* user question for that turn's context.
-        # The ground truth will correspond to the actions needed for *that specific turn*.
-        questions = entry_data["question"]
-        ground_truths = entry_answer["ground_truth"]
-        initial_config = entry_data["initial_config"]
-        involved_classes = entry_data["involved_classes"]
-        entry_id = entry_data["id"]
-
-        assert len(questions) == len(ground_truths), (
-            f"Mismatch in number of turns for entry {entry_id}"
+        # Assert number of turns matches between question and ground truth
+        assert len(question_data) == len(ground_truth), (
+            f"Mismatch in number of turns for entry {i}"
         )
 
-        # Create one entry per original turn
-        for turn_idx in range(len(questions)):
-            # The prompt only contains the *first* user question of the *current* turn
-            current_user_question = questions[turn_idx][0]["content"]
-            # The ground truth is only for the *current* turn
-            current_ground_truth = [ground_truths[turn_idx]] # Wrap in list for consistency
-
-            processed_entry = {
-                "id": f"{entry_id}_turn_{turn_idx}", # Unique ID per turn
-                "involved_classes": involved_classes,
-                "initial_config": json.dumps(initial_config), # Keep original initial config
-                "prompt": format_bfcl_prompt(
-                    involved_classes=involved_classes,
-                    user_question=current_user_question,
-                ),
-                # Ground truth now only contains the answer for the *current* turn's request
-                "answer": json.dumps(current_ground_truth),
-                # Store the original full answer for potential complex reward calculation later if needed
-                "original_full_answer": json.dumps(ground_truths),
-                "num_total_turns_in_task": len(questions), # Original number of turns in the task
-                "current_turn_index": turn_idx, # Index of this turn within the original task
-                # These are no longer needed as we process one turn at a time
-                # "user_question_bank": "[]",
-                # "ground_truth_bank": "[]",
-            }
-            processed_data.append(processed_entry)
-
-            # If curriculum learning, potentially create sub-entries (though less relevant with single-turn interaction)
-            # For now, curriculum learning based on num_total_turns_in_task
-            if curriculum_learning:
-                 processed_entry["num_turns"] = processed_entry["num_total_turns_in_task"] # Use total task turns for curriculum sorting
-
-
-    if not curriculum_learning:
-        # Add num_turns if not using curriculum learning (can just be 1 or based on original task)
-         for entry in processed_data:
-             entry["num_turns"] = entry["num_total_turns_in_task"] # Or set to 1 if preferred
-
-
-    dataset = Dataset.from_list(processed_data)
-
-    # --- Splitting ---
-    # Get unique original IDs and split those first to keep turns from the same task together
-    unique_original_ids = sorted(list(set(d["id"].split('_turn_')[0] for d in processed_data)))
-    train_ids, test_ids = train_test_split(unique_original_ids, test_size=0.5, random_state=42)
-
-    # Filter dataset based on original IDs
-    train_dataset = dataset.filter(lambda x: x["id"].split('_turn_')[0] in train_ids)
-    test_dataset = dataset.filter(lambda x: x["id"].split('_turn_')[0] in test_ids)
+        multi_turn_base_data[i]["num_turns"] = len(question_data)
+        multi_turn_base_data[i]["question"] = json.dumps(question_data)
+        multi_turn_base_data[i]["initial_config"] = json.dumps(initial_config)
+        multi_turn_base_data[i]["answer"] = json.dumps(ground_truth)
 
     if curriculum_learning:
-        # Sort both splits by num_turns (total task turns)
-        def sort_by_turns(split_ds):
-            df = split_ds.to_pandas()
+        # Create curriculum data with copies for each turn
+        curriculum_data = []
+        for entry in multi_turn_base_data:
+            questions = json.loads(entry["question"])
+            answers = json.loads(entry["answer"])
+
+            # Create copies for each turn number
+            for j in range(1, entry["num_turns"] + 1):
+                curriculum_entry = copy.deepcopy(entry)
+                curriculum_entry["question"] = json.dumps(copy.deepcopy(questions[:j]))
+                curriculum_entry["answer"] = json.dumps(copy.deepcopy(answers[:j]))
+                curriculum_entry["num_turns"] = j
+                curriculum_data.append(curriculum_entry)
+        multi_turn_base_data = curriculum_data
+
+    dataset = Dataset.from_list(multi_turn_base_data)
+    dataset = dataset.map(
+        lambda x: {
+            "prompt": format_bfcl_prompt(
+                involved_classes=x["involved_classes"],
+                user_question=json.dumps(json.loads(x["question"])[0][0]["content"]),
+            ),
+            # NOTE:: user_question_bank is a list of lists
+            "user_question_bank": json.dumps(json.loads(x["question"])[1:])
+            if len(json.loads(x["question"])) > 1
+            else json.dumps([]),
+            "ground_truth_bank": copy.deepcopy(x["answer"]),
+            "num_turns": x["num_turns"],
+            "id": x["id"],
+        }
+    )
+    for i in range(len(dataset)):
+        ground_truth_bank = json.loads(dataset[i]["ground_truth_bank"])
+        user_question_bank = json.loads(dataset[i]["user_question_bank"])
+        assert len(ground_truth_bank) == len(user_question_bank) + 1, (
+            f"Length mismatch at index {i}: ground_truth_bank ({len(ground_truth_bank)}) != user_question_bank ({len(user_question_bank)})"
+        )
+    # Get unique IDs and split those first
+    unique_ids = sorted(list(set(dataset["id"])))
+    train_ids, test_ids = train_test_split(unique_ids, test_size=0.5, random_state=42)
+
+    # Filter dataset based on IDs
+    train_dataset = dataset.filter(lambda x: x["id"] in train_ids)
+    test_dataset = dataset.filter(lambda x: x["id"] in test_ids)
+
+    if curriculum_learning:
+        # Sort both splits by num_turns while preserving randomization within same num_turns
+        def sort_by_turns(split):
+            df = split.to_pandas()
+            # Set seed for reproducibility
             rng = np.random.RandomState(42)
+            # Randomize order within same num_turns by adding small random values
             df["sort_key"] = df["num_turns"] + rng.random(len(df)) * 0.1
             df = df.sort_values("sort_key")
             df = df.drop("sort_key", axis=1)
@@ -165,21 +159,17 @@ def preprocess_bfcl_dataset(
 
     dataset_dict = DatasetDict({"train": train_dataset, "test": test_dataset})
 
-    # assert train_dataset and test_dataset have non-overlapping original ids
-    train_original_ids = set(x["id"].split('_turn_')[0] for x in train_dataset)
-    test_original_ids = set(x["id"].split('_turn_')[0] for x in test_dataset)
-    assert len(train_original_ids & test_original_ids) == 0, (
-        "Train and test datasets have overlapping original task ids"
+    # assert train_dataset and test_dataset have non-overlapping ids
+    assert len(set(train_dataset["id"]) & set(test_dataset["id"])) == 0, (
+        "Train and test datasets have overlapping ids"
     )
-    logger.info(f"Preprocessed dataset for split '{split}'. Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
-    return dataset_dict[split]
 
+    return dataset_dict[split]
 
 class BfclITEnv(MultiStepEnv):
     def __init__(
         self,
         dataset: str = "bfcl",
-        tokenizer: PreTrainedTokenizerBase = None, # Added tokenizer
         tools: List[Callable] = [],
         few_shot: List[Dict[str, str]] = [],
         sampling_args={ # Default stop tokens for the new flow
@@ -197,9 +187,7 @@ class BfclITEnv(MultiStepEnv):
         **kwargs,
     ):
         logger.info("Initializing BfclITEnv (Single Assistant Turn Flow)")
-        if tokenizer is None:
-            raise ValueError("BfclITEnv requires a tokenizer instance.")
-        self.tokenizer = tokenizer # Store tokenizer
+        self.tokenizer = None # will be set later
 
         # max_num_turns is less relevant now for generation, but kept for dataset filtering
         self.max_num_turns = kwargs.pop("max_num_turns", 1)
@@ -253,43 +241,47 @@ class BfclITEnv(MultiStepEnv):
              )
         return self.dataset
 
+    def get_dataset(self, max_num_turns: int = -1, **kwargs: Any) -> Dataset:
+        if self.dataset is None:
+            self.dataset = preprocess_bfcl_dataset(
+                split="train",
+                curriculum_learning=self.curriculum_learning,
+            )
+        if max_num_turns > 0:
+            self.dataset = self.dataset.filter(
+                lambda x: x["num_turns"] <= max_num_turns
+            )
+        return self.dataset
+
     def get_eval_dataset(
         self,
         n: int = -1,
         max_num_turns: int = -1,
-        max_turn_only: bool = False, # This logic might need adjustment based on new structure
+        max_turn_only: bool = False,
         **kwargs: Any,
     ) -> Dataset | None:
         if self.eval_dataset is None:
-            logger.info(f"Preprocessing dataset {self.dataset_name} for test split...")
             self.eval_dataset = preprocess_bfcl_dataset(
                 split="test",
                 curriculum_learning=self.curriculum_learning,
             )
-
-        effective_max_turns = max_num_turns if max_num_turns > 0 else self.max_num_turns
-        if effective_max_turns > 0:
-            logger.info(f"Filtering eval dataset to max {effective_max_turns} total turns in task.")
+        if max_num_turns > 0:
             self.eval_dataset = self.eval_dataset.filter(
-                lambda x: x["num_total_turns_in_task"] <= effective_max_turns
+                lambda x: x["num_turns"] <= max_num_turns
             )
-
         if max_turn_only:
-             logger.warning("'max_turn_only' behavior might differ with the new turn-per-entry structure. Keeping only the last turn index for each original task ID.")
-             # Group by original task id and keep only the entry with the highest current_turn_index
-             grouped = {}
-             for item in self.eval_dataset:
-                 original_id = item["id"].split('_turn_')[0]
-                 if (
-                     original_id not in grouped
-                     or grouped[original_id]["current_turn_index"] < item["current_turn_index"]
-                 ):
-                     grouped[original_id] = item
-             self.eval_dataset = Dataset.from_list(list(grouped.values()))
-
+            # Group by id and keep only max num_turns entry per group
+            grouped = {}
+            for item in self.eval_dataset:
+                item_id = item["id"]
+                if (
+                    item_id not in grouped
+                    or grouped[item_id]["num_turns"] < item["num_turns"]
+                ):
+                    grouped[item_id] = item
+            self.eval_dataset = Dataset.from_list(list(grouped.values()))
         if n > 0:
-            logger.info(f"Selecting random {n} samples from eval dataset.")
-            self.eval_dataset = self.eval_dataset.shuffle(seed=42).select(range(n))
+            self.eval_dataset = self.eval_dataset.shuffle().select(range(n))
         return self.eval_dataset
 
     def get_rubric(self, **kwargs: Any) -> List[RewardFunc]:
@@ -536,7 +528,12 @@ class BfclITEnv(MultiStepEnv):
             logger.warning(f"Could not retrieve available tools: {e}")
             return "Could not determine available tools."
 
-    # env_response is removed
+    # Needs to be there as Abstract Method
+    def env_response(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, str]:
+        """
+        Generate a response from the environment based on the current messages.
+        """
+        raise NotImplementedError("env_response is not implemented for this environment.")
 
     def step(
         self,
@@ -557,19 +554,12 @@ class BfclITEnv(MultiStepEnv):
             current_messages = states[i]["messages"]
             messages_to_step.append(current_messages)
             # Determine if we are starting or continuing the assistant message
-            if current_messages[-1]["role"] == "user":
-                add_gen_prompt_flags.append(True)
-                continue_final_message_flags.append(False)
-            elif current_messages[-1]["role"] == "assistant": # Resuming after tool call
-                add_gen_prompt_flags.append(False)
-                continue_final_message_flags.append(True)
-            else:
-                # Should not happen if logic is correct, but handle defensively
-                logger.error(f"Unexpected last message role for state {i}: {current_messages[-1]['role']}")
-                # Default to starting a new message
-                add_gen_prompt_flags.append(True)
-                continue_final_message_flags.append(False)
-
+        if states[live_indices[0]]["messages"][-1]["role"] == "user":
+            add_gen_prompt=True
+            continue_final_message=False
+        else:
+            add_gen_prompt=False
+            continue_final_message=True
 
         if debug:
             if live_indices and not states[live_indices[0]].get("completed", False):
@@ -587,9 +577,8 @@ class BfclITEnv(MultiStepEnv):
                  messages_to_step,
                  sampling_params=sampling_params,
                  use_tqdm=False,
-                 # Pass lists of flags if llm.chat supports it, otherwise requires loop
-                 add_generation_prompt=add_gen_prompt_flags, # Assumes llm.chat handles list
-                 continue_final_message=continue_final_message_flags, # Assumes llm.chat handles list
+                 add_generation_prompt=add_gen_prompt,
+                 continue_final_message=continue_final_message,
              ) # type: ignore
         except TypeError as e:
              # Fallback to processing one by one if batching flags fails
