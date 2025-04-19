@@ -535,6 +535,8 @@ class BfclITEnv(MultiStepEnv):
         """
         raise NotImplementedError("env_response is not implemented for this environment.")
 
+# In bfcl_inthinking_env.py
+
     def step(
         self,
         states: List[Dict[str, Any]],
@@ -542,150 +544,253 @@ class BfclITEnv(MultiStepEnv):
         sampling_params: SamplingParams,
         debug: bool = False,
     ) -> List[Dict[str, Any]]:
-        live_indices = [i for i, s in enumerate(states) if not s.get("completed", False)] # Use .get for safety
+        live_indices = [i for i, s in enumerate(states) if not s.get("completed", False)]
         if not live_indices:
-            return states # All states are completed
+            return states
 
-        messages_to_step = []
-        add_gen_prompt_flags = []
-        continue_final_message_flags = []
+        # --- Separate states based on required LLM call type ---
+        start_states_data = [] # { "index": original_index, "messages": messages }
+        continue_states_data = [] # { "index": original_index, "messages": messages }
 
         for i in live_indices:
-            current_messages = states[i]["messages"]
-            messages_to_step.append(current_messages)
-            # Determine if we are starting or continuing the assistant message
-        if states[live_indices[0]]["messages"][-1]["role"] == "user":
-            add_gen_prompt=True
-            continue_final_message=False
-        else:
-            add_gen_prompt=False
-            continue_final_message=True
+            state = states[i]
+            if state.get("completed", False):
+                continue
 
-        if debug:
-            if live_indices and not states[live_indices[0]].get("completed", False):
-                print("-" * 30 + f" Step Start (Live: {len(live_indices)}) " + "-" * 30)
-                print(f"State {live_indices[0]} Input Messages (last 2): {messages_to_step[0][-2:]}")
-                # time.sleep(1)
+            current_messages = state["messages"]
+            # Check the role of the actual last message to decide the call type
+            if current_messages[-1]["role"] == "user":
+                start_states_data.append({"index": i, "messages": current_messages})
+            elif current_messages[-1]["role"] == "assistant":
+                continue_states_data.append({"index": i, "messages": current_messages})
+            else:
+                # This case should ideally not happen if state logic is correct
+                logger.error(f"State {i}: Unexpected last message role {current_messages[-1]['role']} in live state. Marking as error.")
+                state["completed"] = True
+                state["error_message"] = "Internal error: Invalid message structure before LLM call."
 
-        # --- Call LLM ---
-        # Note: vLLM/TRL might need specific handling for batching requests with mixed
-        # add_generation_prompt and continue_final_message flags.
-        # Assuming the llm.chat handles this correctly or processes sequentially if needed.
-        # If batching fails, process one by one.
-        try:
-             llm_responses = llm.chat(
-                 messages_to_step,
-                 sampling_params=sampling_params,
-                 use_tqdm=False,
-                 add_generation_prompt=add_gen_prompt,
-                 continue_final_message=continue_final_message,
-             ) # type: ignore
-        except TypeError as e:
-             # Fallback to processing one by one if batching flags fails
-             logger.warning(f"LLM chat might not support list flags ({e}). Processing sequentially.")
-             llm_responses = []
-             for idx, msg_list in enumerate(messages_to_step):
-                 response = llm.chat(
-                     [msg_list], # Send as list containing one conversation
-                     sampling_params=sampling_params,
-                     use_tqdm=False,
-                     add_generation_prompt=add_gen_prompt_flags[idx],
-                     continue_final_message=continue_final_message_flags[idx],
-                 )[0] # Get the single response from the list
-                 llm_responses.append(response)
+        # --- Perform LLM Calls Separately ---
+        all_llm_responses = {} # Store responses mapped by original index: { index: llm_response_obj }
 
+        # Call for states starting a new message
+        if start_states_data:
+            start_indices = [d["index"] for d in start_states_data]
+            start_messages = [d["messages"] for d in start_states_data]
+            if debug: print(f"---> Calling LLM for {len(start_indices)} states (add_generation_prompt=True)")
+            try:
+                start_responses = llm.chat(
+                    start_messages, sampling_params=sampling_params, use_tqdm=False,
+                    add_generation_prompt=True,
+                    continue_final_message=False, # Explicitly False
+                )
+                # Ensure the number of responses matches the number of prompts sent
+                if len(start_responses) != len(start_indices):
+                     logger.error(f"LLM call (start group) mismatch: Sent {len(start_indices)} prompts, received {len(start_responses)} responses.")
+                     # Handle mismatch - mark corresponding states as error?
+                     for original_index in start_indices:
+                         if original_index not in all_llm_responses: # Avoid overwriting if already processed somehow
+                            states[original_index]["completed"] = True
+                            states[original_index]["error_message"] = "LLM response count mismatch (start group)."
+                else:
+                    # Map responses back to original indices
+                    for idx, response_obj in enumerate(start_responses):
+                        original_index = start_indices[idx]
+                        all_llm_responses[original_index] = response_obj
+            except Exception as e:
+                logger.exception(f"Error during LLM chat call (start group): {e}")
+                for original_index in start_indices:
+                    states[original_index]["completed"] = True
+                    states[original_index]["error_message"] = f"LLM chat call failed (start group): {e}"
 
-        # --- Process LLM Responses ---
-        for i, live_idx in enumerate(live_indices):
+        # Call for states continuing a message
+        if continue_states_data:
+            continue_indices = [d["index"] for d in continue_states_data]
+            continue_messages = [d["messages"] for d in continue_states_data]
+            if debug: print(f"---> Calling LLM for {len(continue_indices)} states (continue_final_message=True)")
+            try:
+                continue_responses = llm.chat(
+                    continue_messages, sampling_params=sampling_params, use_tqdm=False,
+                    add_generation_prompt=False, # Explicitly False
+                    continue_final_message=True,
+                )
+                 # Ensure the number of responses matches the number of prompts sent
+                if len(continue_responses) != len(continue_indices):
+                     logger.error(f"LLM call (continue group) mismatch: Sent {len(continue_indices)} prompts, received {len(continue_responses)} responses.")
+                     # Handle mismatch
+                     for original_index in continue_indices:
+                         if original_index not in all_llm_responses:
+                            states[original_index]["completed"] = True
+                            states[original_index]["error_message"] = "LLM response count mismatch (continue group)."
+                else:
+                    # Map responses back to original indices
+                    for idx, response_obj in enumerate(continue_responses):
+                        original_index = continue_indices[idx]
+                        # Check if index already exists (shouldn't happen if logic is correct)
+                        if original_index in all_llm_responses:
+                             logger.warning(f"State {original_index} received response from both start and continue groups. Using continue response.")
+                        all_llm_responses[original_index] = response_obj
+            except Exception as e:
+                logger.exception(f"Error during LLM chat call (continue group): {e}")
+                for original_index in continue_indices:
+                     # Avoid overwriting error from start group if it happened
+                     if not states[original_index].get("completed", False):
+                        states[original_index]["completed"] = True
+                        states[original_index]["error_message"] = f"LLM chat call failed (continue group): {e}"
+
+        # --- Process All Received LLM Responses ---
+        if not all_llm_responses:
+             if debug: print("No LLM responses received or processed in this step.")
+             return states # Return states as they might have been updated with errors
+
+        if debug: print(f"--- Processing {len(all_llm_responses)} LLM responses ---")
+
+        # Iterate through the indices for which we expected and potentially received responses
+        processed_indices = sorted(all_llm_responses.keys()) # Process in order
+        for live_idx in processed_indices:
+            # live_idx = llm_call_indices[i] # This was incorrect index mapping before
             state = states[live_idx]
-            llm_response_obj = llm_responses[i]
+            llm_response_obj = all_llm_responses[live_idx] # Get response using correct index
+
+            # Skip processing if the state was marked completed due to an LLM error above
+            if state.get("completed", False) and "LLM" in state.get("error_message", ""):
+                continue
+            if state.get("completed", False): # General check
+                logger.warning(f"State {live_idx} was already completed before processing its LLM response. Skipping.")
+                continue
+
             new_response_text = llm_response_obj.outputs[0].text
             new_response_ids = llm_response_obj.outputs[0].token_ids
 
-            if debug and live_idx == 0:
+            if debug and live_idx == 0: # Log for the first state processed in this batch
                 print(f"State {live_idx} LLM Output Segment: '{new_response_text}'")
-                # time.sleep(1)
 
-            # Initialize state fields if first step
+            # Initialize state fields if needed
             if "completion_ids" not in state: state["completion_ids"] = []
             if "completion_mask" not in state: state["completion_mask"] = []
             if "prompt_ids" not in state: state["prompt_ids"] = []
             if "successful_func_calls" not in state: state["successful_func_calls"] = []
-
-            # Store prompt IDs only once at the beginning
             if not state["prompt_ids"] and llm_response_obj.prompt_token_ids:
                 state["prompt_ids"] = list(llm_response_obj.prompt_token_ids)
 
-            # Update assistant message content
-            if state["messages"][-1]["role"] == "user":
-                # Start new assistant message
+            # Append new text segment
+            # Determine if starting or continuing based on message history *before* the call
+            # This relies on the separation logic being correct.
+            last_message_role_before_call = None
+            if live_idx in [d['index'] for d in start_states_data]:
+                 last_message_role_before_call = 'user'
+            elif live_idx in [d['index'] for d in continue_states_data]:
+                 last_message_role_before_call = 'assistant'
+
+            if last_message_role_before_call == 'user':
                 state["messages"].append({"role": "assistant", "content": new_response_text})
-            elif state["messages"][-1]["role"] == "assistant":
-                # Append to existing assistant message
+            elif last_message_role_before_call == 'assistant':
                 state["messages"][-1]["content"] += new_response_text
             else:
-                 logger.error(f"State {live_idx}: Cannot append response, last message role is {state['messages'][-1]['role']}")
-                 state["completed"] = True # Mark as completed due to error state
-                 state["error_message"] = "Internal error: Unexpected message structure."
-                 continue # Skip further processing for this state
+                 # This case should have been caught earlier, but handle defensively
+                 logger.error(f"State {live_idx}: Could not determine if starting or continuing. Last role: {state['messages'][-1]['role']}. Marking error.")
+                 state["completed"] = True
+                 state["error_message"] = "Internal error: Ambiguous state for appending LLM response."
+                 continue
 
-            # Update completion IDs and mask for the *generated* part
+
+            # Update completion IDs/mask for the *generated* part
             state["completion_ids"].extend(new_response_ids)
-            state["completion_mask"].extend([1] * len(new_response_ids)) # Generated tokens are unmasked (1)
+            state["completion_mask"].extend([1] * len(new_response_ids))
 
-            # --- Check for Stop Tokens and Handle Actions ---
-            current_content = state["messages"][-1]["content"]
+            # --- Check for Stop Conditions (using the logic from the previous correction) ---
+            # (The rest of the logic for checking termination tokens, tool calls, max tokens,
+            #  truncation, mask rebuilding, and final state updates remains the same as
+            #  the previous answer - Paste that logic block here)
+            # --- Start of pasted logic block ---
+            current_content = state["messages"][-1]["content"] # Full accumulated content
             completed_this_step = False
-            stop_token_found = None
 
-            if current_content.endswith("</tool>"):
+            # 1. Check for TERMINATION tokens in the FULL accumulated content
+            termination_token = None
+            if "<TASK_FINISHED>" in current_content: termination_token = "<TASK_FINISHED>"
+            elif "<TASK_ERROR>" in current_content: termination_token = "<TASK_ERROR>"
+
+            if termination_token:
+                if debug and live_idx == 0: print(f"State {live_idx}: Found termination token '{termination_token}' in accumulated content.")
+                completed_this_step = True
+                state["completed"] = True
+                first_term_idx = current_content.find(termination_token)
+                if first_term_idx != -1:
+                    target_content_len = first_term_idx + len(termination_token)
+                    if len(current_content) > target_content_len:
+                        if debug and live_idx == 0: print(f"State {live_idx}: Truncating content after first '{termination_token}'.")
+                        state["messages"][-1]["content"] = current_content[:target_content_len]
+                        try:
+                            full_sequence_tokens = self.tokenizer.encode(state["messages"][-1]["content"], add_special_tokens=False)
+                            prompt_len = len(state.get("prompt_ids", []))
+                            state["completion_ids"] = full_sequence_tokens[prompt_len:]
+                            mask = []
+                            completion_text_for_mask = self.tokenizer.decode(state["completion_ids"], skip_special_tokens=True)
+                            segments = completion_text_for_mask.split("<tool_result>")
+                            first_segment = True
+                            for segment in segments:
+                                if not first_segment and "</tool_result>" in segment:
+                                    result_part, rest_part = segment.split("</tool_result>", 1)
+                                    result_tokens_segment = self.tokenizer.encode("<tool_result>" + result_part + "</tool_result>", add_special_tokens=False)
+                                    mask.extend([self.env_mask] * len(result_tokens_segment))
+                                    rest_tokens_segment = self.tokenizer.encode(rest_part, add_special_tokens=False)
+                                    mask.extend([1] * len(rest_tokens_segment))
+                                else:
+                                    part_tokens = self.tokenizer.encode(segment, add_special_tokens=False)
+                                    if part_tokens: mask.extend([1] * len(part_tokens))
+                                first_segment = False
+                            state["completion_mask"] = mask[:len(state["completion_ids"])]
+                            if len(state["completion_mask"]) != len(state["completion_ids"]):
+                                logger.warning(f"State {live_idx}: Mask length mismatch after rebuild ({len(state['completion_mask'])} vs {len(state['completion_ids'])}). Adjusting.")
+                                min_len_rebuild = min(len(state["completion_ids"]), len(state["completion_mask"]))
+                                state["completion_ids"] = state["completion_ids"][:min_len_rebuild]
+                                state["completion_mask"] = state["completion_mask"][:min_len_rebuild]
+                        except Exception as e_recalc:
+                             logger.exception(f"State {live_idx}: Error recalculating tokens/mask after truncation: {e_recalc}.")
+
+            # 2. Check for Tool Call Stop Token (only if not already terminated)
+            elif not completed_this_step and current_content.endswith("</tool>"):
                 stop_token_found = "</tool>"
                 if debug and live_idx == 0: print(f"State {live_idx}: Detected </tool>")
-                # --- Handle Tool Call ---
                 try:
-                    parsed = self.llm_parser.parse(current_content)
-                    if hasattr(parsed, "tool") and parsed.tool is not None:
-                        tool_result_json, state = self.call_tool(parsed.tool, state=state, debug=debug)
-                        tool_result_str = f"<tool_result> {tool_result_json} </tool_result>"
-
-                        if debug and live_idx == 0: print(f"State {live_idx}: Tool Result: {tool_result_str}")
-
-                        # Append result to assistant message
-                        state["messages"][-1]["content"] += tool_result_str
-
-                        # Tokenize result and update state (masking the result)
-                        # Use add_special_tokens=False to avoid extra BOS/EOS here
-                        result_tokens = self.tokenizer.encode(tool_result_str, add_special_tokens=False)
-                        state["completion_ids"].extend(result_tokens)
-                        state["completion_mask"].extend([self.env_mask] * len(result_tokens)) # Mask injected tokens
-
-                        # Check if max tool interactions reached AFTER this call
-                        tool_interactions = self._get_tool_interaction_count(state["messages"])
-                        if tool_interactions >= self.max_steps_per_turn:
-                             logger.warning(f"State {live_idx}: Reached max tool interactions ({self.max_steps_per_turn}) after tool call.")
-                             # Append TASK_ERROR to signify forced stop? Or just complete?
-                             # Let's just mark completed for now. The reward can penalize this.
-                             state["messages"][-1]["content"] += "\n<TASK_ERROR> Max tool interactions reached.</TASK_ERROR>"
-                             error_tokens = self.tokenizer.encode("\n<TASK_ERROR> Max tool interactions reached.</TASK_ERROR>", add_special_tokens=False)
-                             state["completion_ids"].extend(error_tokens)
-                             state["completion_mask"].extend([1] * len(error_tokens)) # Model didn't generate, but part of final state
-                             completed_this_step = True
+                    last_tool_start_idx = current_content.rfind("<tool>")
+                    if last_tool_start_idx != -1:
+                        last_tool_segment = current_content[last_tool_start_idx:]
+                        parsed = self.llm_parser.parse(last_tool_segment)
+                        if hasattr(parsed, "tool") and parsed.tool is not None:
+                            tool_result_json, state = self.call_tool(parsed.tool, state=state, debug=debug)
+                            tool_result_str = f"<tool_result> {tool_result_json} </tool_result>"
+                            state["messages"][-1]["content"] += tool_result_str
+                            result_tokens = self.tokenizer.encode(tool_result_str, add_special_tokens=False)
+                            state["completion_ids"].extend(result_tokens)
+                            state["completion_mask"].extend([self.env_mask] * len(result_tokens))
+                            tool_interactions = self._get_tool_interaction_count(state["messages"])
+                            if tool_interactions >= self.max_steps_per_turn:
+                                logger.warning(f"State {live_idx}: Reached max tool interactions ({self.max_steps_per_turn}).")
+                                error_marker = "\n<TASK_ERROR> Max tool interactions reached.</TASK_ERROR>"
+                                state["messages"][-1]["content"] += error_marker
+                                error_tokens = self.tokenizer.encode(error_marker, add_special_tokens=False)
+                                state["completion_ids"].extend(error_tokens)
+                                state["completion_mask"].extend([1] * len(error_tokens))
+                                completed_this_step = True; state["completed"] = True
+                            else:
+                                completed_this_step = False; state["completed"] = False
                         else:
-                             # Continue generation in the next step
-                             state["completed"] = False
-                             completed_this_step = False # Explicitly not completed
-
+                            logger.warning(f"State {live_idx}: Failed to parse tool from last segment.")
+                            error_str = "<tool_result> Error: Could not parse recent tool command. </tool_result>"
+                            state["messages"][-1]["content"] += error_str
+                            error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
+                            state["completion_ids"].extend(error_tokens)
+                            state["completion_mask"].extend([self.env_mask] * len(error_tokens))
+                            completed_this_step = False; state["completed"] = False
                     else:
-                        logger.warning(f"State {live_idx}: Found </tool> but failed to parse tool command from content.")
-                        error_str = "<tool_result> Error: Could not parse tool command after </tool> tag. </tool_result>"
+                        logger.warning(f"State {live_idx}: Found </tool> without preceding <tool>.")
+                        error_str = "<tool_result> Error: Malformed output - stray </tool>. </tool_result>"
                         state["messages"][-1]["content"] += error_str
                         error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
                         state["completion_ids"].extend(error_tokens)
                         state["completion_mask"].extend([self.env_mask] * len(error_tokens))
-                        # Continue generation, hoping the model corrects or finishes
-                        state["completed"] = False
-                        completed_this_step = False
-
+                        completed_this_step = False; state["completed"] = False
                 except Exception as e:
                     logger.exception(f"State {live_idx}: Error during tool call processing: {e}")
                     error_str = f"<tool_result> Error: Exception during tool processing: {e} </tool_result>"
@@ -693,78 +798,57 @@ class BfclITEnv(MultiStepEnv):
                     error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
                     state["completion_ids"].extend(error_tokens)
                     state["completion_mask"].extend([self.env_mask] * len(error_tokens))
-                    # Mark as completed with error
-                    state["messages"][-1]["content"] += "\n<TASK_ERROR> Internal error during tool execution.</TASK_ERROR>"
-                    error_tokens_term = self.tokenizer.encode("\n<TASK_ERROR> Internal error during tool execution.</TASK_ERROR>", add_special_tokens=False)
+                    error_marker = "\n<TASK_ERROR> Internal error during tool execution.</TASK_ERROR>"
+                    state["messages"][-1]["content"] += error_marker
+                    error_tokens_term = self.tokenizer.encode(error_marker, add_special_tokens=False)
                     state["completion_ids"].extend(error_tokens_term)
                     state["completion_mask"].extend([1] * len(error_tokens_term))
-                    state["completed"] = True
-                    completed_this_step = True
+                    completed_this_step = True; state["completed"] = True
 
-            elif current_content.endswith("<TASK_FINISHED>"):
-                stop_token_found = "<TASK_FINISHED>"
-                if debug and live_idx == 0: print(f"State {live_idx}: Detected <TASK_FINISHED>")
-                state["completed"] = True
-                completed_this_step = True
-            elif current_content.endswith("<TASK_ERROR>"):
-                stop_token_found = "<TASK_ERROR>"
-                if debug and live_idx == 0: print(f"State {live_idx}: Detected <TASK_ERROR>")
-                state["completed"] = True
-                completed_this_step = True
-
-            # Check max tokens completion
-            if not completed_this_step and len(state["completion_ids"]) >= sampling_params.max_tokens:
-                 logger.warning(f"State {live_idx}: Reached max tokens ({sampling_params.max_tokens}). Truncating and marking completed.")
+            # 3. Check max tokens (only if not already completed)
+            # Use state.get("completion_ids", []) for safety in case it wasn't initialized
+            current_completion_len = len(state.get("completion_ids", []))
+            if not completed_this_step and current_completion_len >= sampling_params.max_tokens:
+                 logger.warning(f"State {live_idx}: Reached max tokens ({sampling_params.max_tokens}). Current: {current_completion_len}")
                  state["completion_ids"] = state["completion_ids"][:sampling_params.max_tokens]
                  state["completion_mask"] = state["completion_mask"][:sampling_params.max_tokens]
-                 # Append TASK_ERROR? Maybe just truncate is better.
-                 # Let's add a note in the content
-                 state["messages"][-1]["content"] += "\n<TASK_ERROR> Max tokens reached during generation.</TASK_ERROR>"
+                 prompt_toks = state.get("prompt_ids", [])
+                 full_toks_truncated = prompt_toks + state["completion_ids"]
+                 # Decode carefully, potentially without skipping special tokens if needed by template structure
+                 try:
+                      # Attempt decoding, might fail if tokens are invalid/incomplete
+                      decoded_content = self.tokenizer.decode(full_toks_truncated, skip_special_tokens=True)
+                      state["messages"][-1]["content"] = decoded_content
+                 except Exception as e_decode:
+                      logger.error(f"State {live_idx}: Failed to decode truncated tokens: {e_decode}. Content might be inconsistent.")
+                      # Fallback: Keep content as is before truncation attempt, just mark completed
+                 if "<TASK_FINISHED>" not in state["messages"][-1]["content"] and "<TASK_ERROR>" not in state["messages"][-1]["content"]:
+                      state["messages"][-1]["content"] += "\n<TASK_ERROR> Max tokens reached.</TASK_ERROR>"
                  state["completed"] = True
                  completed_this_step = True
 
-            # --- Final State Updates for Completed Entries ---
+            # --- Final State Updates (only run if completed *in this step*) ---
             if completed_this_step:
-                 if debug and live_idx == 0: print(f"State {live_idx}: Marked as completed.")
-
-                 # Ensure mask and ids lengths match after potential truncation/error append
+                 if debug and live_idx == 0: print(f"State {live_idx}: Marked as completed in this step.")
                  min_len = min(len(state["completion_ids"]), len(state["completion_mask"]))
-                 state["completion_ids"] = state["completion_ids"][:min_len]
-                 state["completion_mask"] = state["completion_mask"][:min_len]
-
-                 # --- Execute Ground Truth Calls (for final state comparison in reward) ---
-                 # This happens *after* the model's generation is finished.
-                 # It updates the 'ground_truth_environment' based on the 'answer' field.
+                 if len(state["completion_ids"]) != min_len or len(state["completion_mask"]) != min_len:
+                      logger.warning(f"State {live_idx}: Correcting length mismatch before GT ({len(state['completion_ids'])} vs {len(state['completion_mask'])}).")
+                      state["completion_ids"] = state["completion_ids"][:min_len]
+                      state["completion_mask"] = state["completion_mask"][:min_len]
                  try:
                       if "answer" in state["dataset_row"] and state["dataset_row"]["answer"]:
-                           if debug and live_idx == 0: print(f"State {live_idx}: Executing ground truth calls for final state...")
-                           _, state = self.call_tool(
-                               tool_json=None, # Not used for GT
-                               state=state,
-                               debug=(debug and (live_idx == 0)),
-                               ground_truth=True,
-                           )
+                           if debug and live_idx == 0: print(f"State {live_idx}: Executing ground truth calls...")
+                           _, state = self.call_tool(tool_json=None, state=state, debug=(debug and (live_idx == 0)), ground_truth=True)
                            if debug and live_idx == 0: print(f"State {live_idx}: Ground truth execution finished.")
-                      else:
-                           if debug and live_idx == 0: print(f"State {live_idx}: No ground truth answer found to execute.")
-
                  except Exception as e:
-                      logger.error(f"State {live_idx}: Failed to execute ground truth calls: {e}")
-                      # Log this error, but don't necessarily stop the whole process
+                      logger.error(f"State {live_idx}: Failed GT calls: {e}")
                       state["ground_truth_error"] = str(e)
+                 assert len(state["completion_mask"]) == len(state["completion_ids"]), \
+                     f"State {live_idx}: Final length mismatch! Mask: {len(state['completion_mask'])}, IDs: {len(state['completion_ids'])}"
+            # --- End of pasted logic block ---
 
-                 # Final check for length consistency (paranoid check)
-                 if len(state["completion_mask"]) != len(state["completion_ids"]):
-                     logger.error(f"State {live_idx}: Mismatch after completion! Mask: {len(state['completion_mask'])}, IDs: {len(state['completion_ids'])}")
-                     min_len = min(len(state["completion_mask"]), len(state["completion_ids"]))
-                     state["completion_mask"] = state["completion_mask"][:min_len]
-                     state["completion_ids"] = state["completion_ids"][:min_len]
 
-            # Assert length consistency before next loop/end
-            assert len(state["completion_mask"]) == len(state["completion_ids"]), \
-                f"State {live_idx}: Final length mismatch! Mask: {len(state['completion_mask'])}, IDs: {len(state['completion_ids'])}"
-
-        if debug: print("-" * 30 + f" Step End (Live: {len(live_indices)}) " + "-" * 30)
+        if debug: print("-" * 30 + f" Step End (Processed {len(all_llm_responses)} LLM responses) " + "-" * 30)
         return states
 
 
