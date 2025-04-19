@@ -336,7 +336,13 @@ class BfclRubric(Rubric):
                         return tuple(make_hashable(item) for item in value)
                     elif isinstance(value, set):
                         return frozenset(make_hashable(item) for item in value)
-                    return value
+                    elif isinstance(value, tuple):
+                        return tuple(make_hashable(item) for item in value)
+                    try:
+                        hash(value)
+                        return value
+                    except TypeError:
+                        return str(value)
 
                 comparable_model_calls = [
                     (call["name"], frozenset((k, make_hashable(v)) for k, v in call["args"].items()))
