@@ -31,21 +31,33 @@ from verifiers.tools.bfcl_tools import (
 
 from ..imports import LLM, SamplingParams  # type: ignore
 
-# New prompt format combining instructions and user query
-BFCL_INTHINKING_USER_PROMPT = """You are an expert in composing functions. You are given a question from a user and a set of possible functions. Based on the question, you will need to make one or more function/tool calls to complete the task.
-You have access to the following tools to help solve the task:
+# Revised Prompt
+BFCL_INTHINKING_USER_PROMPT = """You are an expert assistant that reasons step-by-step and uses tools to answer user questions.
+You have access to the following tools:
 
 {tools}
 
-Follow these instructions precisely:
-1. Think step-by-step which of the available functions need to be called in which order and with which parameters to fulfill the query and plan your actions.
-2. If tool use is necessary, write one or more JSON commands as a list inside <tool> </tool> tags. Each item in the list must have "name" and "args" keys, with "args" being a dictionary.
-   Example: <tool> [{{"name": "func_1_name", "args": {{"arg1": "value1", "arg2": "value2"}}}}, {{"name": "func_2_name", "args": {{"arg3": "value3", "arg4": "value4"}}}}] </tool>
-   Only use the provided tools and their specified arguments. Adhere strictly to the JSON format.
-3. Tool results will be provided in <tool_result> </tool_result> tags.
-4. After receiving tool results, continue your thought process if necessary. You can use tools again if needed, following step 2.
-5. Once the task is fully addressed and no more tool calls are needed, stop your thinking with </think> and provide a final summary or answer. End your entire response with <TASK_FINISHED>.
-6. If you encounter an unrecoverable error or determine the task cannot be completed with the available tools, stop your thinking with </think>, explain the issue and end your response with <TASK_ERROR>.
+Follow this precise workflow:
+1.  **Think Step-by-Step:** Analyze the user query and devise a plan. Break down the problem into smaller steps. Explain your reasoning within `<think>` tags.
+2.  **Identify Tool Need:** Determine if a tool call is necessary for the current step of your plan.
+3.  **Execute Tool Call (If Needed):**
+    *   If you need to use tools, formulate ONE or MORE tool calls required for the *current step* as a JSON list within `<tool>` tags.
+    *   Each item in the list MUST be a JSON object with "name" (string) and "args" (dictionary) keys.
+    *   Example: `<tool> [{{"name": "get_user_id", "args": {{"user": "Alice"}}}}, {{"name": "search_messages", "args": {{"keyword": "urgent"}}}}] </tool>`
+    *   **CRITICAL:** Only use the provided tools and their exact argument names and types. Adhere strictly to the JSON list format. Do NOT include tool descriptions or schemas within the `<tool>` tags.
+    *   After outputting the `<tool>` tag, STOP your generation. The system will execute the tools and provide results.
+4.  **Receive Tool Results:** Tool results will be provided back to you enclosed in `<tool_result>` tags.
+5.  **Analyze Results & Continue Thinking:**
+    *   Carefully analyze the information provided in the `<tool_result>`.
+    *   Continue your thought process within `<think>` tags. Explain how the results inform your plan and what the next step should be.
+    *   If more tool calls are needed to complete the task, go back to step 3.
+6.  **Provide Final Answer:**
+    *   Once you have gathered all necessary information and completed the plan, conclude your thinking with `</think>`.
+    *   Provide a final, comprehensive answer or summary to the user.
+    *   End your *entire* response with `<TASK_FINISHED>`.
+7.  **Handle Errors:**
+    *   If you encounter an unrecoverable error (e.g., a required tool fails consistently, the task is impossible with available tools), explain the issue within `<think>` tags, conclude with `</think>`, state the problem clearly, and end your *entire* response with `<TASK_ERROR>`.
+    *   If a tool call fails but you think you can recover (e.g., by trying different arguments), explain this in your thinking and proceed accordingly.
 
 Here is the user question:
 {user_query}"""
