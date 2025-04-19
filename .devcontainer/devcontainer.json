@@ -5,6 +5,8 @@
     ],
     "service": "trainer",
     "workspaceFolder": "/workspace",
+    "overrideCommand": true,
+    "command": ["/bin/sh", "-c", "while sleep 1000; do :; done"],
     "extensions": [
         "ms-python.python",
         "ms-toolsai.jupyter"
