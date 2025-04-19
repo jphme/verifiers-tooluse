@@ -1,10 +1,13 @@
-from trl import GRPOConfig
 from typing import List, Optional
 
-def get_default_grpo_config(run_name: str,
-                            num_gpus: int = 1,
-                            reward_weights: Optional[List[float]] = None,
-                            ) -> GRPOConfig:
+from trl import GRPOConfig
+
+
+def get_default_grpo_config(
+    run_name: str,
+    num_gpus: int = 1,
+    reward_weights: Optional[List[float]] = None,
+) -> GRPOConfig:
     return GRPOConfig(
         output_dir=f"outputs/{run_name}",
         run_name=run_name,
@@ -28,14 +31,12 @@ def get_default_grpo_config(run_name: str,
         save_steps=100,
         save_only_model=True,
         use_vllm=True,
-        vllm_device=f"cuda:{num_gpus-1}",
+        vllm_device=f"cuda:{num_gpus - 1}",
         # vllm_gpu_memory_utilization=0.7 if num_gpus > 1 else 0.3,
-        vllm_gpu_memory_utilization=0.9,
+        vllm_gpu_memory_utilization=0.7,
         logging_steps=1,
         log_on_each_node=False,
         log_completions=True,
         report_to="wandb",
-        reward_weights=reward_weights
+        reward_weights=reward_weights,
     )
-
-
