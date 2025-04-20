@@ -664,7 +664,7 @@ class BfclITEnv(MultiStepEnv):
                            if debug: print(f"State {i} marked completed by is_completed check.")
                       else:
                            # This case is ambiguous - why continue if not ending in result and not completed?
-                           logger.error(f"State {i}: Ambiguous state - assistant message without result, but not completed. Marking error.")
+                           if debug: logger.error(f"State {i}: Ambiguous state - assistant message without result, but not completed. Marking error.")
                            state["completed"] = True
                            state["error_message"] = "Internal error: Ambiguous assistant state."
 

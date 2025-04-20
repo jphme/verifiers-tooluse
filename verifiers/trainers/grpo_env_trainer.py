@@ -505,7 +505,7 @@ class GRPOEnvTrainer(GRPOTrainer):
 
 
                 # Log to WandB if enabled
-                if self.is_wandb_available() and self.args.report_to and "wandb" in self.args.report_to:
+                if is_wandb_available() and self.args.report_to and "wandb" in self.args.report_to:
                     import pandas as pd
                     table_data = {
                         "step": [str(self.state.global_step)] * len(all_rewards_list),
