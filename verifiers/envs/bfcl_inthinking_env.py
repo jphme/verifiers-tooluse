@@ -85,12 +85,12 @@ My plan is:
 1. Use the `get_user_id` tool to find Bob's user ID.
 2. Use the `send_message` tool with the obtained ID and a welcome message.
 First step is to get the user ID.
-<tool>{"name": "get_user_id", "args": {"user": "Bob"}}</tool><tool_result>["Function Call {'name': 'get_user_id', 'args': {'user': 'Bob'}} Succeeded. Result: {'user_id': 'USR123'}"]</tool_result>
+<tool>{"name": "get_user_id", "args": {"user": "Bob"}}</tool><tool_result>"Function Call {'name': 'get_user_id', 'args': {'user': 'Bob'}} Succeeded. Result: {'user_id': 'USR123'}"</tool_result>
 Okay, the `get_user_id` tool successfully returned Bob's user ID as 'USR123'.
 Now I have the `receiver_id` needed for the next step.
 My plan was to send a welcome message. I will now use the `send_message` tool.
 I'll compose a simple welcome message.
-<tool>{"name": "send_message", "args": {"receiver_id": "USR123", "message": "Welcome to the team, Bob!"}}</tool><tool_result>["Function Call {'name': 'send_message', 'args': {'receiver_id': 'USR123', 'message': 'Welcome to the team, Bob!'}} Succeeded. Result: {'sent_status': True, 'message_id': 500}"]</tool_result>
+<tool>{"name": "send_message", "args": {"receiver_id": "USR123", "message": "Welcome to the team, Bob!"}}</tool><tool_result>"Function Call {'name': 'send_message', 'args': {'receiver_id': 'USR123', 'message': 'Welcome to the team, Bob!'}} Succeeded. Result: {'sent_status': True, 'message_id': 500}"</tool_result>
 The `send_message` tool confirmed that the message was sent successfully (sent_status: True).
 I have now completed all the steps required by the user's request.
 I should inform the user that the message has been sent.
@@ -523,7 +523,7 @@ class BfclITEnv(MultiStepEnv):
             # Ensure tool_json_str is not None or empty before parsing
             if not tool_json_str or not tool_json_str.strip():
                  logger.warning(f"State {state.get('id', 'N/A')}: Received empty tool call string.")
-                 return json.dumps(["Error: Empty tool command received."]), state
+                 return json.dumps("Error: Empty tool command received."), state
 
             # Attempt to parse the string as a single JSON object
             tool_call = json.loads(tool_json_str)
@@ -535,7 +535,7 @@ class BfclITEnv(MultiStepEnv):
                 and isinstance(tool_call["args"], dict)
             ):
                 tool_call_result_str = f"Function Call {tool_json_str} Failed. Error: Invalid format (must be JSON object with 'name' and 'args' dict)."
-                return json.dumps([tool_call_result_str]), state # Return error in list format for consistency
+                return json.dumps(tool_call_result_str), state # Return error in list format for consistency
 
             tool_name = tool_call["name"]
             tool_args = tool_call["args"]
@@ -551,7 +551,7 @@ class BfclITEnv(MultiStepEnv):
             target_instance = None
             if "environment" not in state or not state["environment"]:
                 tool_call_result_str = f"Function Call {tool_call} Failed. Error: Environment not initialized."
-                return json.dumps([tool_call_result_str]), state
+                return json.dumps(tool_call_result_str), state
 
             # Find the method in the initialized environment instances
             for class_instance in state["environment"].values():
@@ -593,14 +593,14 @@ class BfclITEnv(MultiStepEnv):
                 tool_call_result_str = f"Function Call {tool_call} Failed during execution. Error: {e}"
 
             # Return result string within a list for consistency with multi-call format expectation downstream (if any)
-            return json.dumps([tool_call_result_str]), state
+            return json.dumps(tool_call_result_str), state
 
         except json.JSONDecodeError as e:
             logger.warning(f"State {state.get('id', 'N/A')}: JSONDecodeError parsing tool call: '{tool_json_str}'. Error: {e}")
-            return json.dumps([f"Error decoding tool call JSON: {e}. Ensure the format is a single JSON object."]), state
+            return json.dumps(f"Error decoding tool call JSON: {e}. Ensure the format is a single JSON object."), state
         except Exception as e:
             logger.exception(f"State {state.get('id', 'N/A')}: Unexpected error in call_tool for call '{tool_json_str}': {e}")
-            return json.dumps([f"Unexpected error processing tool call: {e}"]), state
+            return json.dumps(f"Unexpected error processing tool call: {e}"), state
 
     def _get_available_tools_message(self, state: Dict[str, Any]) -> str:
         """Helper to create a message listing available tools."""
@@ -650,8 +650,10 @@ class BfclITEnv(MultiStepEnv):
             if current_messages[-1]["role"] == "user":
                 start_states_data.append({"index": i, "messages": current_messages})
             elif current_messages[-1]["role"] == "assistant":
+                 if debug:
+                    logger.debug(f"State {i} checking for continuation. Last message ends with: '{current_messages[-1]['content'][-50:]}'")
                  # Check if the last assistant message ended with a tool result, requiring continuation
-                 if current_messages[-1]["content"].strip().endswith("</tool_result>"):
+                 if current_messages[-1]["content"].strip().endswith("</tool_result> Ok,") or current_messages[-1]["content"].strip().endswith("</tool_result> Wait,"):
                       continue_states_data.append({"index": i, "messages": current_messages})
                  else:
                       # If assistant message doesn't end with result, it might be finished or errored.
@@ -714,7 +716,11 @@ class BfclITEnv(MultiStepEnv):
         if continue_states_data:
             continue_indices = [d["index"] for d in continue_states_data]
             continue_messages = [d["messages"] for d in continue_states_data]
-            if debug: print(f"---> Calling LLM for {len(continue_indices)} states (continue_final_message=True)")
+            if debug:
+                for idx, msg_list in enumerate(continue_messages):
+                    original_index = continue_indices[idx]
+                    logger.debug(f"Input messages for continuation call (State {original_index}):\n{json.dumps(msg_list, indent=2)}") 
+                print(f"---> Calling LLM for {len(continue_indices)} states (continue_final_message=True)")
             try:
                  # Ensure tokenizer is set
                 if self.tokenizer is None and hasattr(llm, 'tokenizer'):
@@ -729,6 +735,21 @@ class BfclITEnv(MultiStepEnv):
                     add_generation_prompt=False, # Don't add prompt again
                     continue_final_message=True, # Append to existing assistant message
                 )
+                if debug:
+                    logger.debug(f"Raw responses from continuation call (Count: {len(continue_responses)}):")
+                    for idx, resp_obj in enumerate(continue_responses):
+                        original_index = continue_indices[idx]
+                        logger.debug(f"--- Response for State {original_index} ---")
+                        # Log relevant parts of the RequestOutput object
+                        logger.debug(f"  Prompt Tokens: {len(resp_obj.prompt_token_ids) if resp_obj.prompt_token_ids else 'N/A'}")
+                        if resp_obj.outputs:
+                            logger.debug(f"  Output Text: '{resp_obj.outputs[0].text}'")
+                            logger.debug(f"  Output Tokens: {resp_obj.outputs[0].token_ids}")
+                            logger.debug(f"  Finish Reason: {resp_obj.outputs[0].finish_reason}")
+                        else:
+                            logger.debug("  No outputs in response object.")
+                        logger.debug(f"  Error: {resp_obj.error if hasattr(resp_obj, 'error') else 'N/A'}") # Check if vLLM adds error info
+                        logger.debug(f"-------------------------")
                 if len(continue_responses) != len(continue_indices):
                     logger.error(f"LLM call (continue group) mismatch: Sent {len(continue_indices)} prompts, received {len(continue_responses)} responses.")
                     for original_index in continue_indices:
@@ -862,7 +883,11 @@ class BfclITEnv(MultiStepEnv):
 
                              # Call the tool with the extracted JSON string
                              tool_result_json, state = self.call_tool(tool_json_str, state=state, debug=debug)
-                             tool_result_str = f"<tool_result>{tool_result_json}</tool_result>" # Note: Removed space inside tags
+                             if "error" in tool_result_json.lower():
+                                 tool_result_str = f"<tool_result>{tool_result_json}</tool_result> Wait, "
+                             else:
+                                 tool_result_str = f"<tool_result>{tool_result_json}</tool_result> Ok, " # Note: Removed space inside tags
+
 
                              # Append result to message content
                              state["messages"][-1]["content"] += tool_result_str
@@ -892,7 +917,7 @@ class BfclITEnv(MultiStepEnv):
 
                         else: # Malformed <tool>...</tool> pair
                             logger.warning(f"State {live_idx}: Found </tool> but couldn't extract valid content after last <tool>.")
-                            error_str = "<tool_result>[\"Error: Malformed tool call structure.\"]</tool_result>"
+                            error_str = "<tool_result>\"Error: Malformed tool call structure.\"</tool_result> Wait, "
                             state["messages"][-1]["content"] += error_str
                             error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
                             state["completion_ids"].extend(error_tokens)
@@ -901,7 +926,7 @@ class BfclITEnv(MultiStepEnv):
                             needs_recalculation = False
                     else: # Found </tool> without preceding <tool> in the current assistant message segment
                         logger.warning(f"State {live_idx}: Found </tool> without preceding <tool> tag.")
-                        error_str = "<tool_result>[\"Error: Stray </tool> tag found.\"]</tool_result>"
+                        error_str = "<tool_result>\"Error: Stray </tool> tag found.\"</tool_result> Wait, "
                         state["messages"][-1]["content"] += error_str
                         error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
                         state["completion_ids"].extend(error_tokens)
@@ -911,7 +936,7 @@ class BfclITEnv(MultiStepEnv):
 
                 except Exception as e:
                     logger.exception(f"State {live_idx}: Error during tool call processing: {e}")
-                    error_str = f"<tool_result>[\"Error: Exception during tool processing: {e}\"]</tool_result>"
+                    error_str = f"<tool_result>\"Error: Exception during tool processing: {e}\"</tool_result> Wait, "
                     state["messages"][-1]["content"] += error_str
                     error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
                     state["completion_ids"].extend(error_tokens)
@@ -1261,7 +1286,11 @@ class BfclITEnv(MultiStepEnv):
                         s["completed"] = True
                         s["error_message"] = f"Generation failed at step {step_count}: {e}"
                 break # Exit loop on fatal error
-
+            if debug:
+                logger.debug("--- End of Step Status ---")
+                for idx, s in enumerate(states):
+                    logger.debug(f"State {idx} (ID: {s.get('id', 'N/A')}): Completed={s.get('completed', False)}, Error='{s.get('error_message', None)}'")
+                logger.debug("--------------------------")
             all_completed = all(s.get("completed", False) for s in states)
             if debug: print(f"--- Finished Generation Step {step_count} (All Completed: {all_completed}) ---")
 

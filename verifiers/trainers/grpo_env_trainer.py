@@ -144,7 +144,8 @@ class GRPOEnvTrainer(GRPOTrainer):
         # These should match the env's sampling_args
         self.sampling_params.stop = self.env.sampling_args.get("stop", ["</tool>", "<TASK_FINISHED>", "<TASK_ERROR>"])
         self.sampling_params.include_stop_str_in_output = self.env.sampling_args.get("include_stop_str_in_output", True)
-        logger.info(f"Trainer sampling params set: stop={self.sampling_params.stop}, include_stop={self.sampling_params.include_stop_str_in_output}")
+        self.sampling_params.ignore_eos = self.env.sampling_args.get("ignore_eos", False)
+        logger.info(f"Trainer sampling params set: stop={self.sampling_params.stop}, include_stop={self.sampling_params.include_stop_str_in_output}, ignore_eos={self.sampling_params.ignore_eos}")
 
         # Curator viewer setup (optional)
         # if os.environ.get("CURATOR_VIEWER") == "1":
