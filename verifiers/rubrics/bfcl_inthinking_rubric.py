@@ -194,7 +194,7 @@ class BfclITRubric(Rubric):
         completions: List[List[Dict[str, str]]],
         states: List[Dict[str, Any]],
         debug: bool = False,
-        max_successful_calls_rewarded: int = 3,
+        max_successful_calls_rewarded: int = 2,
         max_correct_name_calls_rewarded: int = 3,
         reward_per_successful_call: float = 0.05,
         reward_per_correct_name: float = 0.1,
@@ -271,6 +271,9 @@ class BfclITRubric(Rubric):
             think_end_idx = content.find("</think>")
             task_finished_idx = content.find("<TASK_FINISHED>")
             task_error_idx = content.find("<TASK_ERROR>")
+            if task_error_idx != -1 and content.find("Max tool interactions reached.") != -1:
+                # this wasn't set by the agent but by the env
+                task_error_idx = -1
 
             has_tools = "<tool>" in content
             tools_before_think = False

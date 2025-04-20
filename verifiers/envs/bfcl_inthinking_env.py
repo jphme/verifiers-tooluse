@@ -1029,47 +1029,6 @@ class BfclITEnv(MultiStepEnv):
                     state["completed"] = True
                     state["error_message"] = f"Internal error: Failed to recalculate tokens/mask: {e_recalc}"
 
-
-            # --- Final State Updates (only run if completed *in this step*) ---
-            if completed_this_step and state["completed"]: # Double check state["completed"]
-                if debug and live_idx == processed_indices[0]: print(f"State {live_idx}: Marked as completed in this step.")
-                # Final length check/correction before GT calls
-                min_len = min(len(state.get("completion_ids", [])), len(state.get("completion_mask", [])))
-                if len(state.get("completion_ids", [])) != min_len or len(state.get("completion_mask", [])) != min_len:
-                    logger.warning(f"State {live_idx}: Correcting final length mismatch before GT ({len(state.get('completion_ids',[]))} vs {len(state.get('completion_mask',[]))}).")
-                    state["completion_ids"] = state.get("completion_ids", [])[:min_len]
-                    state["completion_mask"] = state.get("completion_mask", [])[:min_len]
-
-                # Execute Ground Truth calls for comparison/reward calculation
-                try:
-                    # Check if ground truth answer exists for the current turn
-                    answer_exists = False
-                    if "answer" in state["dataset_row"] and state["dataset_row"]["answer"]:
-                         all_turns_answers = json.loads(state["dataset_row"]["answer"])
-                         current_turn_index = state["dataset_row"]["num_turns"] - 1
-                         if current_turn_index < len(all_turns_answers):
-                              answer_exists = True
-
-                    if answer_exists:
-                         if debug and live_idx == processed_indices[0]: print(f"State {live_idx}: Executing ground truth calls for turn {current_turn_index + 1}...")
-                         # Pass None for tool_json_str as it's not used for GT mode
-                         _, state = self.call_tool(tool_json_str=None, state=state, debug=(debug and (live_idx == processed_indices[0])), ground_truth=True)
-                         if debug and live_idx == processed_indices[0]: print(f"State {live_idx}: Ground truth execution finished.")
-                    else:
-                         if debug and live_idx == processed_indices[0]: print(f"State {live_idx}: No ground truth answer found for turn {current_turn_index + 1}. Skipping GT execution.")
-                         state["ground_truth_successful_calls"] = [] # Ensure field exists even if empty
-
-                except Exception as e_gt:
-                    logger.error(f"State {live_idx}: Failed Ground Truth calls execution: {e_gt}")
-                    state["ground_truth_error"] = str(e_gt) # Log GT error separately
-
-                # Final assertion for length consistency
-                final_ids_len = len(state.get("completion_ids", []))
-                final_mask_len = len(state.get("completion_mask", []))
-                assert final_ids_len == final_mask_len, \
-                    f"State {live_idx}: Final length mismatch! Mask: {final_mask_len}, IDs: {final_ids_len}"
-
-
         if debug: print("-" * 30 + f" Step End (Processed {len(all_llm_responses)} LLM responses) " + "-" * 30)
         return states
 
@@ -1309,6 +1268,32 @@ class BfclITEnv(MultiStepEnv):
                         # Ideally, re-tokenize and update mask here, but might be complex.
                         # For simplicity, just mark completed. Reward function should handle this.
 
+        logger.info(f"Executing Ground Truth calls for all {len(states)} final states...")
+        for i, state in enumerate(states):
+            # Ensure environment exists before calling GT
+            if "ground_truth_environment" not in state or not state["ground_truth_environment"]:
+                 logger.error(f"State {i} (ID: {state.get('id', 'N/A')}): Cannot run GT calls, ground_truth_environment missing.")
+                 state["ground_truth_error"] = "GT environment missing at final execution stage."
+                 continue # Skip GT for this state
+
+            try:
+                # Call the modified, robust call_tool for ground truth
+                # Pass None for tool_json_str as it's not used for GT mode
+                gt_status_msg, state = self.call_tool(
+                    tool_json_str=None,
+                    state=state,
+                    debug=(debug and i < 2), # Limit debug noise for GT calls
+                    ground_truth=True
+                )
+                if debug and i < 2: # Log status for first few states
+                    logger.debug(f"State {i} (ID: {state.get('id', 'N/A')}) GT Execution Status: {gt_status_msg}")
+                # Error details are now stored in state["ground_truth_error"] by call_tool
+
+            except Exception as e_gt_final:
+                # This catch is a fallback, call_tool should handle internal errors now
+                logger.exception(f"State {i} (ID: {state.get('id', 'N/A')}): Unexpected exception during final GT execution call: {e_gt_final}")
+                state["ground_truth_error"] = f"Unexpected exception in final GT call: {e_gt_final}"
+        logger.info("Finished executing Ground Truth calls.")
 
         # --- Cleanup and Package Results ---
         self.cleanup_instances()
