@@ -522,7 +522,7 @@ class BfclITEnv(MultiStepEnv):
         try:
             # Ensure tool_json_str is not None or empty before parsing
             if not tool_json_str or not tool_json_str.strip():
-                 logger.warning(f"State {state.get('id', 'N/A')}: Received empty tool call string.")
+                 if debug:logger.warning(f"State {state.get('id', 'N/A')}: Received empty tool call string.")
                  return json.dumps("Error: Empty tool command received."), state
 
             # Attempt to parse the string as a single JSON object
@@ -596,7 +596,7 @@ class BfclITEnv(MultiStepEnv):
             return json.dumps(tool_call_result_str), state
 
         except json.JSONDecodeError as e:
-            logger.warning(f"State {state.get('id', 'N/A')}: JSONDecodeError parsing tool call: '{tool_json_str}'. Error: {e}")
+            if debug: logger.warning(f"State {state.get('id', 'N/A')}: JSONDecodeError parsing tool call: '{tool_json_str}'. Error: {e}")
             return json.dumps(f"Error decoding tool call JSON: {e}. Ensure the format is a single JSON object."), state
         except Exception as e:
             logger.exception(f"State {state.get('id', 'N/A')}: Unexpected error in call_tool for call '{tool_json_str}': {e}")
@@ -658,7 +658,7 @@ class BfclITEnv(MultiStepEnv):
                  else:
                       # If assistant message doesn't end with result, it might be finished or errored.
                       # is_completed check should handle this, but add a warning.
-                      logger.warning(f"State {i}: Last message is assistant but doesn't end with </tool_result>. Checking completion status.")
+                      if debug: logger.warning(f"State {i}: Last message is assistant but doesn't end with </tool_result>. Checking completion status.")
                       if self.is_completed(state, debug=debug, sampling_params=sampling_params):
                            state["completed"] = True # Mark completed based on is_completed logic
                            if debug: print(f"State {i} marked completed by is_completed check.")
@@ -717,9 +717,6 @@ class BfclITEnv(MultiStepEnv):
             continue_indices = [d["index"] for d in continue_states_data]
             continue_messages = [d["messages"] for d in continue_states_data]
             if debug:
-                for idx, msg_list in enumerate(continue_messages):
-                    original_index = continue_indices[idx]
-                    logger.debug(f"Input messages for continuation call (State {original_index}):\n{json.dumps(msg_list, indent=2)}") 
                 print(f"---> Calling LLM for {len(continue_indices)} states (continue_final_message=True)")
             try:
                  # Ensure tokenizer is set
@@ -763,7 +760,7 @@ class BfclITEnv(MultiStepEnv):
                             logger.warning(f"State {original_index} received response from both start and continue groups. Overwriting with continue response.")
                         all_llm_responses[original_index] = response_obj
             except Exception as e:
-                logger.exception(f"Error during LLM chat call (continue group): {e}")
+                if debug: logger.exception(f"Error during LLM chat call (continue group): {e}")
                 for original_index in continue_indices:
                     if not states[original_index].get("completed", False):
                         states[original_index]["completed"] = True
@@ -775,7 +772,7 @@ class BfclITEnv(MultiStepEnv):
             # Check if any states are still live but didn't get a response (shouldn't happen)
             for i in live_indices:
                  if i not in all_llm_responses and not states[i].get("completed", False):
-                      logger.error(f"State {i} was live but received no LLM response. Marking error.")
+                      if debug: logger.error(f"State {i} was live but received no LLM response. Marking error.")
                       states[i]["completed"] = True
                       states[i]["error_message"] = "Internal error: No LLM response received."
             return states # Return states as they might have been updated with errors
@@ -831,10 +828,10 @@ class BfclITEnv(MultiStepEnv):
                      state["messages"][-1]["content"] += new_response_text
                 else:
                      # Should not happen if logic is correct, but handle defensively
-                     logger.error(f"State {live_idx}: Tried to continue assistant message, but last message role was not assistant. Starting new.")
+                     if debug:logger.error(f"State {live_idx}: Tried to continue assistant message, but last message role was not assistant. Starting new.")
                      state["messages"].append({"role": "assistant", "content": new_response_text})
             else:
-                logger.error(f"State {live_idx}: Could not determine if starting or continuing. Last role before call unknown. Marking error.")
+                if debug: logger.error(f"State {live_idx}: Could not determine if starting or continuing. Last role before call unknown. Marking error.")
                 state["completed"] = True
                 state["error_message"] = "Internal error: Ambiguous state for appending LLM response."
                 continue
@@ -902,7 +899,7 @@ class BfclITEnv(MultiStepEnv):
                              # Check if max tool interactions reached AFTER this call
                              tool_interactions = self._get_tool_interaction_count(state["messages"])
                              if tool_interactions >= self.max_steps_per_turn:
-                                 logger.warning(f"State {live_idx}: Reached max tool interactions ({self.max_steps_per_turn}) after tool call.")
+                                 if debug:logger.warning(f"State {live_idx}: Reached max tool interactions ({self.max_steps_per_turn}) after tool call.")
                                  error_marker = "\n<TASK_ERROR>Max tool interactions reached.</TASK_ERROR>"
                                  state["messages"][-1]["content"] += error_marker
                                  # Tokenize and add error marker
@@ -916,7 +913,7 @@ class BfclITEnv(MultiStepEnv):
                                  completed_this_step = False; state["completed"] = False
 
                         else: # Malformed <tool>...</tool> pair
-                            logger.warning(f"State {live_idx}: Found </tool> but couldn't extract valid content after last <tool>.")
+                            if debug: logger.warning(f"State {live_idx}: Found </tool> but couldn't extract valid content after last <tool>.")
                             error_str = "<tool_result>\"Error: Malformed tool call structure.\"</tool_result> Wait, "
                             state["messages"][-1]["content"] += error_str
                             error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
@@ -925,7 +922,7 @@ class BfclITEnv(MultiStepEnv):
                             completed_this_step = False; state["completed"] = False # Continue, let model potentially fix
                             needs_recalculation = False
                     else: # Found </tool> without preceding <tool> in the current assistant message segment
-                        logger.warning(f"State {live_idx}: Found </tool> without preceding <tool> tag.")
+                        if debug: logger.warning(f"State {live_idx}: Found </tool> without preceding <tool> tag.")
                         error_str = "<tool_result>\"Error: Stray </tool> tag found.\"</tool_result> Wait, "
                         state["messages"][-1]["content"] += error_str
                         error_tokens = self.tokenizer.encode(error_str, add_special_tokens=False)
@@ -954,7 +951,7 @@ class BfclITEnv(MultiStepEnv):
             current_completion_len = len(state.get("completion_ids", []))
             max_tok = getattr(sampling_params, 'max_tokens', None) # Safe access
             if not completed_this_step and max_tok is not None and current_completion_len >= max_tok:
-                logger.warning(f"State {live_idx}: Reached max tokens ({max_tok}). Current: {current_completion_len}. Truncating.")
+                if debug:logger.warning(f"State {live_idx}: Reached max tokens ({max_tok}). Current: {current_completion_len}. Truncating.")
                 # Truncate completion tokens and mask
                 state["completion_ids"] = state["completion_ids"][:max_tok]
                 state["completion_mask"] = state["completion_mask"][:max_tok]

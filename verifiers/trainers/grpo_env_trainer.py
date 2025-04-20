@@ -188,17 +188,23 @@ class GRPOEnvTrainer(GRPOTrainer):
         # Apply chat template to get flat prompt text for tokenization
         # Ensure the tokenizer has the correct chat template set
         prompts_text = []
-        for example_messages in prompts:
+        prompts_text = []
+        for example_messages in prompts: # example_messages is List[Dict[str, str]]
              try:
-                 # We expect 'prompts' to be List[List[Dict]] where inner list is the conversation
-                 res = maybe_apply_chat_template(example_messages, self.processing_class)
-                 # res can be dict with 'prompt' key or just the string
-                 prompts_text.append(res['prompt'] if isinstance(res, dict) else res)
+                 # Directly apply the template to the list of messages
+                 # We need the string output for tokenization later
+                 # add_generation_prompt=False because the llm.chat call handles the specific
+                 # assistant prompt token when needed. Applying it here might cause issues.
+                 templated_prompt = self.processing_class.apply_chat_template(
+                     example_messages,
+                     tokenize=False,
+                     add_generation_prompt=False
+                 )
+                 prompts_text.append(templated_prompt)
              except Exception as e:
-                  logger.exception(f"Error applying chat template to: {example_messages}. Error: {e}")
-                  # Fallback or re-raise
-                  # Fallback: simple concatenation (might be wrong format)
-                  prompts_text.append("\n".join([msg['content'] for msg in example_messages]))
+                  logger.exception(f"Error applying chat template directly to: {example_messages}. Error: {e}")
+                  # Fallback or re-raise - using empty string might hide issues
+                  prompts_text.append("") # Add empty string on error to maintain list length
 
 
         prompt_inputs = self.processing_class(
