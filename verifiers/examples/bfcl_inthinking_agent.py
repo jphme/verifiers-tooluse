@@ -1,7 +1,7 @@
 import os
 
 import verifiers as vf
-from verifiers.envs import BfclITEnv
+from verifiers.envs.bfcl_inthinking_env import BfclITEnv
 
 #model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 model_name = "Qwen/Qwen2.5-1.5B-Instruct"
