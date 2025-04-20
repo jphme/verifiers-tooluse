@@ -1,554 +1,426 @@
+# bfcl_inthinking_rubric.py
+
 import ast
 import json
+import re
 import time
 from typing import Any, Dict, List
 
-# from bespokelabs import curator
-from datasets import Dataset
+from loguru import logger
 
 from verifiers.parsers import XMLParser
 from verifiers.rubrics import Rubric
-
-# os.environ["CURATOR_DISABLE_CACHE"] = "1"
-# os.environ["CURATOR_VIEWER"] = "0"
-
-# BFCL_PROMPT = """\
-# You are an expert in composing functions. You are given a question from a user and a set of possible functions. Based on the question, you will need to make one or more function/tool calls to complete the task.
-# You have access to the following tools to help solve the task:
-
-# {tools}
-
-# For each step:
-# 1. Start with a step-by-step thinking process inside <reasoning> </reasoning> tags to think through the problem.
-# 2. If needed, use tools by writing one or more JSON commands as a list inside <tool> </tool> tags. Each item in the list should have a name and args key, with args being a dictionary.
-#    example: <tool> [{{"name": func_1_name, "args": {{arg1: value1, arg2: value2}}}}, {{"name": func_2_name, "args": {{arg3: value3, arg4: value4}}}}] </tool>
-#    Tools expect specific JSON input formats. Do not make up tools or arguments that aren't listed.
-# 3. After you have used the tools, you will see the tool outputs inside <tool_result> </tool_result> tags in the same order from the system.
-# 4. If you believe the current task is completed and no more tool, summarize your progresses and output <TASK_FINISHED> in the end of your response to terminate the conversation.
-# 5. Otherwise if you believe the task is not able to be completed, summarize what is problematic and output <TASK_ERROR> in the end of your response to terminate the conversation.
-# """
-
-# class JudgeResult(BaseModel):
-#     is_gibberish: bool = Field(description="Whether the response contains gibberish.")
-#     # reasoning: str = Field(description="Reasoning for the judgment.")
-
-# class Judge(curator.LLM):
-#     response_format = JudgeResult
-
-#     def prompt(self, input: Dict) -> str:
-#         model_completion = [completion for completion in input['completion'] if completion['role'] == 'assistant']
-#         # model_completion = input['completion']
-# #         prompt = f'''Determine whether the following tool-calling agent trajectory contains gibberish output or useless repetitions.
-
-# # The tool-calling agent follows these rules:
-# # {BFCL_PROMPT}
-
-# # When evaluating for gibberish, consider:
-# # 1. Gibberish includes: random tokens, completely irrelevant text, nonsensical outputs, or text that doesn't follow the expected format.
-# # 2. NOT gibberish: Proper and accurate use of <reasoning>, <tool>, and <TASK_FINISHED>/<TASK_ERROR> tags according to the rules.
-# # 3. Make sure to distinguish between gibberish output from the model itself or the tool results. For example, if the tool results looks gibberish, and the model is just reporting it, it is not the model's fault.
-
-# # Analyze the following trajectory, pay attention to assistant messages only and ignore system messages:
-# # {model_completion}
-# # '''
-#         prompt = f"Determine whether the following tool-calling agent responses contains gibberish output or useless repetitions: {model_completion}"
-#         return prompt
-
-#     def parse(self, input: Dict, response: JudgeResult) -> Dict:
-#         input['is_gibberish_judge'] = response.is_gibberish
-#         # input['judge_reasoning'] = response.reasoning
-#         return input
-
-# judge = Judge(model_name="gpt-4o-mini",
-#               generation_params={"temperature": 0.0})
 
 
 class BfclITRubric(Rubric):
     def __init__(
         self,
-        parser: XMLParser = XMLParser(fields=["reasoning", "tool"]),
+        parser: XMLParser = XMLParser(fields=["think", "tool"]),
         env_parser: XMLParser = XMLParser(fields=["tool_result"]),
     ):
         self.parser = parser
         self.env_parser = env_parser
-        self.reward_funcs = [
-            # self.tool_execution_reward_func,
-            self.unified_reward_func,
-        ]
-        # self.llm_judge = Judge(model_name="gpt-4o-mini",
-        #                      generation_params={"temperature": 0.1})
+        # Store individual functions internally
+        self._reward_components = {
+            "unified": self.unified_success_reward_func,
+            "tool_exec": self.tool_execution_reward_func,
+            "format": self.format_reward_func,
+            "self_correct": self.self_correction_reward_func,
+        }
+
+    # --- Keep the individual reward functions exactly as defined in the previous step ---
+    @staticmethod
+    def _parse_function_call(func_call_str: str) -> Dict | None:
+        # ... (implementation from previous step) ...
+        try:
+            tree = ast.parse(func_call_str.strip(), mode='eval')
+            if not isinstance(tree.body, ast.Call):
+                # logger.warning(f"Could not parse '{func_call_str}' as function call.")
+                return None
+
+            func_node = tree.body.func
+            if isinstance(func_node, ast.Name):
+                func_name = func_node.id
+            elif isinstance(func_node, ast.Attribute):
+                func_name = func_node.attr
+            else:
+                # logger.warning(f"Unsupported function call structure in '{func_call_str}'.")
+                return None
+
+            args_dict = {}
+            for kw in tree.body.keywords:
+                try:
+                    # Ensure the value is evaluated safely
+                    value = ast.literal_eval(kw.value)
+                    args_dict[kw.arg] = value
+                except ValueError:
+                    # logger.warning(f"Could not literal_eval keyword arg value in '{func_call_str}'. Skipping arg '{kw.arg}'.")
+                    # Fallback for non-literal values if needed, e.g., represent as string
+                    # args_dict[kw.arg] = ast.dump(kw.value) # Or skip
+                    pass
+                except Exception as e:
+                    logger.warning(f"Error evaluating keyword arg '{kw.arg}' in '{func_call_str}': {e}")
+
+            for i, arg in enumerate(tree.body.args):
+                try:
+                    args_dict[f"pos_arg_{i}"] = ast.literal_eval(arg)
+                except ValueError:
+                    # logger.warning(f"Could not literal_eval positional arg {i} in '{func_call_str}'. Skipping.")
+                    pass
+                except Exception as e:
+                    logger.warning(f"Error evaluating positional arg {i} in '{func_call_str}': {e}")
+
+            # Normalize args: Convert lists to tuples
+            for key, value in args_dict.items():
+                if isinstance(value, list):
+                    args_dict[key] = tuple(value)
+
+            return {"name": func_name, "args": args_dict}
+
+        except Exception as e:
+            # logger.error(f"Failed to parse ground truth function call '{func_call_str}': {e}")
+            return None
+
+
+    @staticmethod
+    def compare_instances(model_object, ground_truth_object):
+        # ... (implementation from previous step) ...
+        if type(model_object) != type(ground_truth_object):
+            # logger.warning(f"Type mismatch in compare_instances: {type(model_object)} vs {type(ground_truth_object)}")
+            return False
+
+        match = True
+        for attr_name in vars(ground_truth_object):
+            if attr_name.startswith("_"):
+                continue
+            if not hasattr(model_object, attr_name):
+                # logger.debug(f"Attribute '{attr_name}' missing in model object.")
+                match = False
+                break
+            model_attr = getattr(model_object, attr_name)
+            ground_truth_attr = getattr(ground_truth_object, attr_name)
+            if model_attr != ground_truth_attr:
+                # logger.debug(f"Attribute mismatch for '{attr_name}': Model='{model_attr}' ({type(model_attr)}), GT='{ground_truth_attr}' ({type(ground_truth_attr)})")
+                match = False
+                break
+        return match
+
+    def unified_success_reward_func(
+        self,
+        completions: List[List[Dict[str, str]]],
+        states: List[Dict[str, Any]],
+        debug: bool = False,
+    ) -> List[float]:
+        # ... (implementation from previous step) ...
+        rewards = []
+        for i, state in enumerate(states):
+            completion = completions[i]
+            if not completion or completion[0].get("role") != "assistant":
+                #  logger.warning(f"State {i}: No valid assistant completion found for unified reward.")
+                 rewards.append(0.0)
+                 continue
+
+            if debug: logger.debug(f"\n--- Unified Reward Check (State {i}) ---")
+
+            all_states_match = True
+            if "ground_truth_environment" not in state or "environment" not in state:
+                # logger.warning(f"State {i}: Missing environment or ground_truth_environment for state comparison.")
+                all_states_match = False
+            else:
+                if state["ground_truth_environment"].keys() != state["environment"].keys():
+                    #  logger.warning(f"State {i}: Environment keys mismatch. GT: {state['ground_truth_environment'].keys()}, Model: {state['environment'].keys()}")
+                     all_states_match = False
+                else:
+                    for key in state["ground_truth_environment"]:
+                        if key not in state["environment"]:
+                            #  logger.warning(f"State {i}: Key '{key}' missing in model environment.")
+                             all_states_match = False
+                             break
+                        if debug: logger.debug(f"Comparing state for class: {key}")
+                        match = self.compare_instances(
+                            state["environment"][key], state["ground_truth_environment"][key]
+                        )
+                        if not match:
+                            if debug: logger.debug(f"State mismatch found for class: {key}")
+                            all_states_match = False
+                            break
+                    if debug and all_states_match: logger.debug("All environment states match GT.")
+
+            calls_match = False
+            try:
+                model_calls_raw = state.get("successful_func_calls", [])
+                model_calls_parsed = []
+                for call in model_calls_raw:
+                    normalized_args = {}
+                    for k, v in call.get("args", {}).items():
+                        normalized_args[k] = tuple(v) if isinstance(v, list) else v
+                    model_calls_parsed.append({"name": call.get("name"), "args": normalized_args})
+
+                all_gt_turns_str = state["dataset_row"].get("answer", "[]")
+                all_gt_turns = json.loads(all_gt_turns_str)
+                current_turn_idx = state["dataset_row"].get("num_turns", 1) - 1
+
+                if current_turn_idx < 0 or current_turn_idx >= len(all_gt_turns):
+                    # logger.warning(f"State {i}: Invalid current_turn_idx ({current_turn_idx}) or GT answer length mismatch.")
+                    calls_match = not model_calls_parsed
+                else:
+                    gt_calls_str_for_turn = all_gt_turns[current_turn_idx]
+                    gt_calls_parsed = [self._parse_function_call(call_str) for call_str in gt_calls_str_for_turn]
+                    gt_calls_parsed = [call for call in gt_calls_parsed if call is not None]
+
+                    # if debug:
+                    #     logger.debug(f"Model Calls Parsed: {model_calls_parsed}")
+                    #     logger.debug(f"GT Calls Parsed: {gt_calls_parsed}")
+
+                    calls_match = (model_calls_parsed == gt_calls_parsed)
+                    if debug: logger.debug(f"Function calls match GT: {calls_match}")
+
+            except json.JSONDecodeError as e:
+                # logger.error(f"State {i}: Failed to parse GT answer JSON: {e}")
+                calls_match = False
+            except Exception as e:
+                # logger.error(f"State {i}: Error during function call comparison: {e}")
+                calls_match = False
+
+            final_reward = 1.0 if all_states_match and calls_match else 0.0
+            rewards.append(final_reward)
+            if debug: logger.debug(f"State Match: {all_states_match}, Calls Match: {calls_match} => Final Unified Reward: {final_reward}")
+            if debug: logger.debug(f"--- End Unified Reward Check (State {i}) ---")
+
+        return rewards
 
     def tool_execution_reward_func(
         self,
         completions: List[List[Dict[str, str]]],
         states: List[Dict[str, Any]],
         debug: bool = False,
-        max_score: float = 0.2,
+        max_successful_calls_rewarded: int = 3,
+        max_correct_name_calls_rewarded: int = 3,
+        reward_per_successful_call: float = 0.05,
+        reward_per_correct_name: float = 0.1,
     ) -> List[float]:
-        """
-        Reward function that checks tool execution success.
+        # ... (implementation from previous step) ...
+        rewards = []
+        for i, state in enumerate(states):
+            if debug: logger.debug(f"\n--- Tool Execution Reward Check (State {i}) ---")
+            current_reward = 0.0
+            successful_calls_count = 0
+            correct_tool_name_count = 0
 
-        Uses XMLParser to identify proper tool calls.
-        """
-        if debug:
-            print("Computing Tool Execution Reward\n")
-            time.sleep(3)
+            model_calls = state.get("successful_func_calls", [])
+            successful_calls_count = len(model_calls)
 
-        def check_execution(trajectory, debug=debug):
-            tool_attempts = 0
-            successful_executions = 0
-
-            # Find assistant messages with tools and their responses
-            for i, msg in enumerate(trajectory):
-                if msg["role"] == "assistant":
-                    if debug:
-                        print(f"LLM Response: {msg['content']}\n")
-                        time.sleep(3)
-                    # Use parser to check for tool tag
-                    parsed = self.parser.parse(msg["content"])
-                    if hasattr(parsed, "tool") and parsed.tool is not None:
-                        # Found a properly formatted tool message
-                        if (
-                            i + 1 < len(trajectory)
-                            and trajectory[i + 1]["role"] == "system"
-                        ):
-                            if debug:
-                                print(
-                                    f"Found properly formatted tool message: {parsed.tool}\n"
-                                )
-                                time.sleep(3)
-                            # Check response with env_parser
-                            parsed_response = self.env_parser.parse(
-                                trajectory[i + 1]["content"]
-                            )
-                            if (
-                                hasattr(parsed_response, "tool_result")
-                                and parsed_response.tool_result is not None
-                            ):
-                                try:
-                                    tool_results = json.loads(
-                                        parsed_response.tool_result
-                                    )
-                                except json.JSONDecodeError:  # NOTE: This means parser malfunctions due to potentially double tags
-                                    tool_results = []
-                                except Exception as e:
-                                    print(f"Tool Result: {parsed_response.tool_result}")
-                                    raise Exception(
-                                        f"Error in Parsing Tool Result is Not Expected!! Error: {e}"
-                                    )
-                                for tool_result in tool_results:
-                                    tool_attempts += 1
-                                    if "error" not in tool_result.lower():
-                                        successful_executions += 1
-                                        if debug:
-                                            print(
-                                                f"Successful execution: {tool_result}\n"
-                                            )
-                                            time.sleep(3)
-                                    else:
-                                        if debug:
-                                            print(
-                                                f"Error in execution: {tool_result}\n"
-                                            )
-                                            time.sleep(3)
-
-                            # if hasattr(parsed_response, 'tool_result') and parsed_response.tool_result is not None and not "error" in parsed_response.tool_result.lower():
-                            #     successful_executions += 1
-                            #     if debug:
-                            #         print(f"Successful execution: {parsed_response.tool_result}")
-                            #         time.sleep(3)
-                            # else:
-                            #     successful_executions += 0
-                            #     if debug:
-                            #         print(f"Error in execution: {parsed_response.tool_result}")
-                            #         time.sleep(3)
-            if debug:
-                print(f"Successful executions: {successful_executions}")
-                print(f"Tool attempts: {tool_attempts}\n")
-                time.sleep(3)
-            # Calculate reward
-            if tool_attempts == 0:
-                if debug:
-                    print("Found no tool calls in the trajectory\n")
-                    time.sleep(3)
-                return 0.0
-            final_score = (
-                max_score * (successful_executions / tool_attempts)
-                if tool_attempts > 0
-                else 0.0
-            )
-            if debug:
-                print(f"Final Tool Execution Score: {final_score}\n")
-                time.sleep(3)
-            return final_score
-
-        return [
-            check_execution(c, debug=(debug and (j == 0)))
-            for j, c in enumerate(completions)
-        ]
-
-    @staticmethod
-    def _parse_function_call(func_call_str: str):
-        """
-        Parses a function call string into a JSON-like dictionary.
-
-        :param func_call_str: String representation of a function call.
-        :return: JSON-like dictionary with function name and arguments.
-        """
-        try:
-            # Parse the function call string into an AST node
-            tree = ast.parse(func_call_str, mode="eval")
-
-            # Ensure it is a function call
-            if not isinstance(tree.body, ast.Call):
-                raise ValueError("Input is not a valid function call.")
-
-            # Extract function name
-            func_name = (
-                tree.body.func.id if isinstance(tree.body.func, ast.Name) else None
-            )
-            if not func_name:
-                raise ValueError("Could not determine function name.")
-
-            # Extract arguments
-            args_dict = {}
-
-            # Handle keyword arguments (named parameters)
-            for kw in tree.body.keywords:
-                args_dict[kw.arg] = ast.literal_eval(
-                    kw.value
-                )  # Convert AST to actual Python value
-
-            # Handle positional arguments (if any, though your example has none)
-            for i, arg in enumerate(tree.body.args):
-                args_dict[f"arg{i + 1}"] = ast.literal_eval(arg)
-
-            # Create JSON output
-            json_obj = {"name": func_name, "args": args_dict}
-
-            return json_obj
-
-        except Exception:
-            raise Exception(
-                "Error in Parsing Ground Truth Function Call is Not Expected!!"
-            )
-
-    @staticmethod
-    def _is_subsequence_unordered(list1, list2) -> tuple[bool, list]:
-        """
-        Checks if all elements of list1 are present in list2, regardless of order.
-        Also returns the elements of list1 that are not present in list2.
-        """
-        if list1 == [] or list2 == []:
-            return False, []
-        # Copy list2 to avoid modifying the original list during checks
-        list2_copy = list2[:]
-
-        # Check each item in list1 to see if it exists in list2_copy
-        missing_elements = []
-        for item in list1:
+            gt_tool_names = set()
             try:
-                # Attempt to remove one occurrence of `item` from list2_copy to handle duplicates
-                list2_copy.remove(item)
-            except ValueError:
-                # If item is not found, add it to missing_elements
-                missing_elements.append(item)
+                all_gt_turns_str = state["dataset_row"].get("answer", "[]")
+                all_gt_turns = json.loads(all_gt_turns_str)
+                current_turn_idx = state["dataset_row"].get("num_turns", 1) - 1
 
-        # If there are missing elements, list1 is not a subsequence of list2
-        is_subsequence = len(missing_elements) == 0
-        return is_subsequence, missing_elements
+                if 0 <= current_turn_idx < len(all_gt_turns):
+                    gt_calls_str_for_turn = all_gt_turns[current_turn_idx]
+                    for call_str in gt_calls_str_for_turn:
+                        parsed_call = self._parse_function_call(call_str)
+                        if parsed_call and "name" in parsed_call:
+                            gt_tool_names.add(parsed_call["name"])
+                if debug: logger.debug(f"GT Tool Names for Turn {current_turn_idx+1}: {gt_tool_names}")
 
-    @staticmethod
-    def compare_instances(model_obect, ground_truth_object):
-        """
-        Checks if the model_object has the same attributes as the ground_truth_object. They are instances of the same class.
-        """
-        assert type(model_obect) == type(ground_truth_object), (
-            "Objects are not of the same type."
-        )
-        differences = {}
-        valid = True
-        for attr_name in vars(ground_truth_object):
-            # We don't check for private attributes
-            if attr_name.startswith("_"):
-                continue
-            model_attr = getattr(model_obect, attr_name)
-            ground_truth_attr = getattr(ground_truth_object, attr_name)
+            except Exception as e:
+                # logger.error(f"State {i}: Failed to get GT tool names: {e}")
+                pass
 
-            if model_attr != ground_truth_attr:
-                valid = False
-                differences[attr_name] = {
-                    "model": model_attr,
-                    "ground_truth": ground_truth_attr,
-                }
 
-        return valid, differences
+            for call in model_calls:
+                if call.get("name") in gt_tool_names:
+                    correct_tool_name_count += 1
 
-    def _check_gibberish(
-        self, completions: List[List[Dict[str, str]]], debug: bool = False
-    ) -> bool:
-        """
-        Checks if the completions contain gibberish output.
-        """
+            successful_call_reward = min(successful_calls_count, max_successful_calls_rewarded) * reward_per_successful_call
+            correct_name_reward = min(correct_tool_name_count, max_correct_name_calls_rewarded) * reward_per_correct_name
 
-        model_responses = Dataset.from_list(
-            [
-                {
-                    "completion": [
-                        one_response
-                        for one_response in c
-                        if one_response["role"] == "assistant"
-                    ]
-                }
-                for c in completions
-            ]
-        )
-        gibberish_results = self.llm_judge(model_responses)
-        gibberish_reward = [
-            result["is_gibberish_judge"] for result in gibberish_results
-        ]
-        return gibberish_reward
+            current_reward = successful_call_reward + correct_name_reward
+            rewards.append(current_reward)
 
-    @staticmethod
-    def _check_tool_result_occurrence(
-        completions: List[List[Dict[str, str]]], debug: bool = False
-    ) -> bool:
-        """
-        Checks if the tool result occurs in the completions.
-        """
-        tool_result_occurrences = []
-        for completion in completions:
-            if any(
-                [
-                    (
-                        msg["role"] == "assistant"
-                        and (
-                            "<tool_result>" in msg["content"].lower()
-                            or "</tool_result>" in msg["content"].lower()
-                        )
-                    )
-                    for msg in completion
-                ]
-            ):
-                tool_result_occurrences.append(True)
-            else:
-                tool_result_occurrences.append(False)
-        return tool_result_occurrences
+            if debug:
+                 logger.debug(f"Successful Model Calls: {successful_calls_count}")
+                 logger.debug(f"Calls with Correct Name: {correct_tool_name_count}")
+                 logger.debug(f"Tool Execution Reward: {current_reward} (Success: {successful_call_reward}, Name: {correct_name_reward})")
+            if debug: logger.debug(f"--- End Tool Execution Reward Check (State {i}) ---")
 
+        return rewards
+
+    def format_reward_func(
+        self,
+        completions: List[List[Dict[str, str]]],
+        states: List[Dict[str, Any]],
+        debug: bool = False,
+        termination_reward: float = 0.1,
+        tool_position_reward: float = 0.1,
+    ) -> List[float]:
+        # ... (implementation from previous step) ...
+        rewards = []
+        for i, completion in enumerate(completions):
+            if not completion or completion[0].get("role") != "assistant":
+                #  logger.warning(f"State {i}: No valid assistant completion found for format reward.")
+                 rewards.append(0.0)
+                 continue
+
+            content = completion[0].get("content", "")
+            current_reward = 0.0
+            if debug: logger.debug(f"\n--- Format Reward Check (State {i}) ---")
+            if debug: logger.debug(f"Content: {content[:50]}...")
+
+            think_end_idx = content.find("</think>")
+            task_finished_idx = content.find("<TASK_FINISHED>")
+            task_error_idx = content.find("<TASK_ERROR>")
+
+            has_tools = "<tool>" in content
+            tools_before_think = False
+            if has_tools and think_end_idx != -1:
+                last_tool_start_idx = content.rfind("<tool>")
+                if last_tool_start_idx != -1 and last_tool_start_idx < think_end_idx:
+                    tools_before_think = True
+            elif has_tools and think_end_idx == -1:
+                pass
+            elif not has_tools:
+                 tools_before_think = False
+
+            if tools_before_think:
+                current_reward += tool_position_reward
+                if debug: logger.debug(f"Tool Position Reward: +{tool_position_reward}")
+
+            terminated_correctly = False
+            has_termination = task_finished_idx != -1 or task_error_idx != -1
+            if has_termination:
+                if think_end_idx != -1:
+                    if (task_finished_idx != -1 and task_finished_idx > think_end_idx) or \
+                       (task_error_idx != -1 and task_error_idx > think_end_idx):
+                        terminated_correctly = True
+
+            if terminated_correctly:
+                current_reward += termination_reward
+                if debug: logger.debug(f"Termination Format Reward: +{termination_reward}")
+            elif has_termination and not terminated_correctly:
+                if debug: logger.debug("Termination found but format incorrect (missing </think> or wrong order).")
+
+            rewards.append(current_reward)
+            if debug: logger.debug(f"Total Format Reward: {current_reward}")
+            if debug: logger.debug(f"--- End Format Reward Check (State {i}) ---")
+
+        return rewards
+
+    def self_correction_reward_func(
+        self,
+        completions: List[List[Dict[str, str]]],
+        states: List[Dict[str, Any]],
+        debug: bool = False,
+        correction_reward: float = 0.1,
+    ) -> List[float]:
+        # ... (implementation from previous step) ...
+        rewards = []
+        pattern = re.compile(r"<tool>\s*\{\s*\"name\"\s*:\s*\"(.*?)\".*?\}\s*</tool>\s*<tool_result>(.*?)</tool_result>", re.DOTALL)
+
+        for i, completion in enumerate(completions):
+            current_reward = 0.0
+            if not completion or completion[0].get("role") != "assistant":
+                #  logger.warning(f"State {i}: No valid assistant completion found for self-correction reward.")
+                 rewards.append(0.0)
+                 continue
+
+            content = completion[0].get("content", "")
+            if debug: logger.debug(f"\n--- Self-Correction Reward Check (State {i}) ---")
+
+            tool_attempts: Dict[str, List[bool]] = {}
+            correction_found = False
+
+            for match in pattern.finditer(content):
+                tool_name = match.group(1)
+                result_content = match.group(2).strip()
+
+                is_success = True
+                # More robust check for failure indicators
+                if result_content.lower().startswith('"error:') or \
+                   result_content.lower().startswith('error:') or \
+                   "failed" in result_content.lower() or \
+                   "error decoding tool call json" in result_content.lower() or \
+                   "stray </tool> tag found" in result_content.lower() or \
+                   "malformed tool call structure" in result_content.lower():
+                    is_success = False
+
+
+                if tool_name not in tool_attempts:
+                    tool_attempts[tool_name] = []
+                tool_attempts[tool_name].append(is_success)
+
+                if debug: logger.debug(f"Found tool call: {tool_name}, Success: {is_success}")
+
+            for tool_name, attempts in tool_attempts.items():
+                failed_idx = -1
+                for idx, success in enumerate(attempts):
+                    if not success:
+                        failed_idx = idx
+                    elif success and failed_idx != -1 and idx > failed_idx:
+                        correction_found = True
+                        if debug: logger.debug(f"Self-correction detected for tool: {tool_name}")
+                        break
+                if correction_found:
+                    break
+
+            if correction_found:
+                current_reward = correction_reward
+
+            rewards.append(current_reward)
+            if debug: logger.debug(f"Total Self-Correction Reward: {current_reward}")
+            if debug: logger.debug(f"--- End Self-Correction Reward Check (State {i}) ---")
+
+        return rewards
+
+    # --- New Combining Function ---
     def unified_reward_func(
         self,
         completions: List[List[Dict[str, str]]],
         states: List[Dict[str, Any]],
         debug: bool = False,
-        func_match_max_score: float = 0.5,
-        state_match_max_score: float = 0.5,
-        format_max_score: float = 0.1,
     ) -> List[float]:
         """
-        Combined reward function that checks state matches, function call matches, and format.
-        State and function matches contribute 0.5 each to base score.
-        If base score is perfect, format check can add 0.1 more.
+        Calculates the final reward based on the specified logic:
+        - If unified success (state + calls match GT) = 1.0:
+            final_reward = 1.0 + format_reward
+        - If unified success = 0.0:
+            final_reward = tool_execution_reward + self_correction_reward + format_reward
         """
-        if debug:
-            print("Computing Unified Reward\n")
-            time.sleep(3)
+        if debug: logger.info("Calculating combined rewards...")
 
-        def check_unified(trajectory, state, debug=debug):
-            # First check state matches
-            if debug:
-                print("Checking State Matches\n")
-                time.sleep(3)
-            num_state_matches = 0
-            num_state_total = 0
-            for key in state["ground_truth_environment"]:
-                if debug:
-                    print(f"Comparing {key} in ground truth and environment")
-                    print("Current Environment Attributes:")
-                    for attr_name, value in vars(state["environment"][key]).items():
-                        if not attr_name.startswith("_"):
-                            print(f"  {attr_name}: {value}")
-                    print("\nGround Truth Environment Attributes:")
-                    for attr_name, value in vars(
-                        state["ground_truth_environment"][key]
-                    ).items():
-                        if not attr_name.startswith("_"):
-                            print(f"  {attr_name}: {value}")
-                    time.sleep(3)
+        # Calculate all individual reward components
+        unified_rewards = self._reward_components["unified"](completions, states, debug)
+        tool_exec_rewards = self._reward_components["tool_exec"](completions, states, debug)
+        format_rewards = self._reward_components["format"](completions, states, debug)
+        self_correct_rewards = self._reward_components["self_correct"](completions, states, debug)
 
-                valid, diffs = self.compare_instances(
-                    state["ground_truth_environment"][key], state["environment"][key]
-                )
-                if debug:
-                    print(f"State Match: {valid}")
-                    print(f"Differences: {diffs}")
-                    time.sleep(3)
-                num_state_matches += int(valid)
-                num_state_total += 1
+        final_rewards = []
+        num_items = len(states)
 
-            state_score = state_match_max_score * (num_state_matches / num_state_total)
-            if debug:
-                print(f"State Score: {state_score}\n")
-                time.sleep(3)
+        for i in range(num_items):
+            unified_r = unified_rewards[i]
+            tool_exec_r = tool_exec_rewards[i]
+            format_r = format_rewards[i]
+            self_correct_r = self_correct_rewards[i]
 
-            # Then check function calls
-            if debug:
-                print("Checking Function Calls\n")
-                time.sleep(3)
-            num_func_matches = 0
-            num_func_total = 0
-            model_func_calls = state["successful_func_calls"]
-            ground_truth_func_calls = json.loads(state["dataset_row"]["answer"])
-            assert len(model_func_calls) == len(ground_truth_func_calls)
-
-            for model_calls, gt_calls_str in zip(
-                model_func_calls, ground_truth_func_calls
-            ):
-                gt_calls = [
-                    self._parse_function_call(call_str) for call_str in gt_calls_str
-                ]
-
-                def make_hashable(value):
-                    if isinstance(value, dict):
-                        return frozenset(
-                            (k, make_hashable(v)) for k, v in value.items()
-                        )
-                    elif isinstance(value, list):
-                        return tuple(make_hashable(item) for item in value)
-                    elif isinstance(value, set):
-                        return frozenset(make_hashable(item) for item in value)
-                    elif isinstance(value, tuple):
-                        return tuple(make_hashable(item) for item in value)
-                    try:
-                        hash(value)
-                        return value
-                    except TypeError:
-                        return str(value)
-
-                comparable_model_calls = [
-                    (
-                        call["name"],
-                        frozenset(
-                            (k, make_hashable(v)) for k, v in call["args"].items()
-                        ),
-                    )
-                    for call in model_calls
-                ]
-
-                for call in gt_calls:
-                    if "args" in call:
-                        for key, value in call["args"].items():
-                            if isinstance(value, list):
-                                call["args"][key] = tuple(value)
-                    else:
-                        raise Exception(
-                            "Error in Parsing Ground Truth Function Call is Not Expected!!"
-                        )
-
-                comparable_gt_calls = [
-                    (
-                        call["name"],
-                        frozenset(
-                            (k, make_hashable(v)) for k, v in call["args"].items()
-                        ),
-                    )
-                    for call in gt_calls
-                ]
-                if debug:
-                    print(f"Comparable Model Calls: {comparable_model_calls}")
-                    print(f"Comparable Ground Truth Calls: {comparable_gt_calls}")
-                    time.sleep(3)
-
-                is_match, _ = self._is_subsequence_unordered(
-                    comparable_gt_calls, comparable_model_calls
-                )
-                if debug:
-                    print(f"Is Subsequence: {is_match}")
-                    time.sleep(3)
-                num_func_matches += int(is_match)
-                num_func_total += 1
-            func_score = func_match_max_score * (num_func_matches / num_func_total)
-            if debug:
-                print(f"Function Call Score: {func_score}\n")
-                time.sleep(3)
-            base_score = state_score + func_score
-            if base_score != state_match_max_score + func_match_max_score:
-                base_score = (
-                    base_score / 10
-                )  # only minimal reward if not correct function call
-
-            # Format Score
-            valid_messages = 0
-            total_messages = 0
-            for msg in trajectory:
-                if msg["role"] == "assistant":
-                    if debug:
-                        print(f"Checking Message: {msg['content']}")
-                        time.sleep(3)
-                    total_messages += 1
-                    parsed = self.parser.parse(msg["content"])
-                    if debug:
-                        print(f"Parsed: {parsed}")
-                        time.sleep(3)
-                    # Must have either tool content or task status or reasoning for all messages
-                    if (
-                        (hasattr(parsed, "tool") and parsed.tool is not None)
-                        or (
-                            hasattr(parsed, "reasoning")
-                            and parsed.reasoning is not None
-                        )
-                        or (
-                            "<TASK_FINISHED>" in msg["content"]
-                            or "<TASK_ERROR>" in msg["content"]
-                        )
-                    ):
-                        valid_messages += 1
-                        if debug:
-                            print("Valid: True")
-                            time.sleep(3)
-                    else:
-                        if debug:
-                            print("Valid: False")
-                            time.sleep(3)
-
-            if valid_messages == total_messages:
-                format_score = format_max_score
+            final_reward = 0.0
+            if unified_r == 1.0:
+                # Success case: Base reward is 1.0 + format bonus
+                final_reward = unified_r + format_r
+                if debug: logger.debug(f"State {i}: Unified Success (1.0) + Format ({format_r}) = {final_reward}")
             else:
-                format_score = (
-                    format_max_score * (valid_messages / total_messages) * 0.5
-                    if total_messages > 0
-                    else 0
-                )
-            base_score += format_score
+                # Failure case: Sum of tool exec, self-correction, and format rewards
+                final_reward = tool_exec_r + self_correct_r + format_r
+                if debug: logger.debug(f"State {i}: Unified Failure (0.0) -> ToolExec ({tool_exec_r}) + SelfCorrect ({self_correct_r}) + Format ({format_r}) = {final_reward}")
 
-            # NOTE: Experimenting with adding format score to base score
-            # base_score += format_score
+            # Ensure reward is not negative (though current logic shouldn't produce negatives)
+            final_rewards.append(max(0.0, final_reward))
 
-            # if debug:
-            #     print(f"State Score: {state_score}")
-            #     print(f"Function Call Score: {func_score}")
-            #     print(f"Format Score: {format_score}")
-            #     print(f"Final Unified Score: {base_score}")
-            #     time.sleep(3)
-            return base_score
+        if debug: logger.info("Finished calculating combined rewards.")
+        return final_rewards
 
-        unified_rewards = [
-            check_unified(c, s, debug=(debug and (j == 0)))
-            for j, (c, s) in enumerate(zip(completions, states))
-        ]
-
-        # LLM Judge to determine if gibberish output
-        # gibberish_rewards = self._check_gibberish(completions)
-
-        # assert len(gibberish_rewards) == len(unified_rewards)
-        # # If gibberish, give 0 reward
-        # for i in range(len(gibberish_rewards)):
-        #     if gibberish_rewards[i]:
-        #         unified_rewards[i] = -1
-
-        # tool_result_occurrences = self._check_tool_result_occurrence(completions)
-        # assert len(tool_result_occurrences) == len(unified_rewards)
-        # for i in range(len(tool_result_occurrences)):
-        #     if tool_result_occurrences[i]:
-        #         unified_rewards[i] = -1
-
-        return unified_rewards
+    def get_reward_funcs(self) -> List[callable]:
+        """Returns only the combined reward calculation function."""
+        # The trainer will call this single function.
+        return [self.unified_reward_func]
