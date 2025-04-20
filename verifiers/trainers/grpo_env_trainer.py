@@ -95,9 +95,10 @@ class GRPOEnvTrainer(GRPOTrainer):
         )
         self.env = env
         # Ensure the env also has the tokenizer
-        self.tokenizer.chat_template = fix_r1_chat_template(self.tokenizer.chat_template)
-        self.llm.set_tokenizer(self.tokenizer)
-        logger.info("Chat Template fixed")
+        if (isinstance(model,str) and "R1" in model) or "R1" in model.name_or_path:
+            self.tokenizer.chat_template = fix_r1_chat_template(self.tokenizer.chat_template)
+            self.llm.set_tokenizer(self.tokenizer)
+            logger.info("Chat Template fixed for R1 style models")
         if hasattr(self.env, 'tokenizer') and self.env.tokenizer is None:
             self.env.tokenizer = self.tokenizer
         elif not hasattr(self.env, 'tokenizer'):
