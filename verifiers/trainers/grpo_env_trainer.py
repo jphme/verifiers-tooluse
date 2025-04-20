@@ -142,7 +142,7 @@ class GRPOEnvTrainer(GRPOTrainer):
         }
         # Set sampling params based on env defaults if not overridden
         # These should match the env's sampling_args
-        self.sampling_params.stop = self.env.sampling_args.get("stop", ["</tool>", "<TASK_FINISHED>", "<TASK_ERROR>"])
+        self.sampling_params.stop = self.env.sampling_args.get("stop", ["</tool>", "<TASK_FINISHED>", "<TASK_ERROR>", "<|im_end|>"])
         self.sampling_params.include_stop_str_in_output = self.env.sampling_args.get("include_stop_str_in_output", True)
         self.sampling_params.ignore_eos = self.env.sampling_args.get("ignore_eos", False)
         logger.info(f"Trainer sampling params set: stop={self.sampling_params.stop}, include_stop={self.sampling_params.include_stop_str_in_output}, ignore_eos={self.sampling_params.ignore_eos}")

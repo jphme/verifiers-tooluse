@@ -3,7 +3,8 @@ import os
 import verifiers as vf
 from verifiers.envs import BfclITEnv
 
-model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+#model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
 TEST_RUN = False
@@ -38,7 +39,7 @@ MAX_GRAD_NORM = 0.1
 # steps per global batch (1 on-policy, N-1 off-policy), mu in DeepSeekMath paper
 NUM_ITERATIONS = 2
 GRADIENT_ACCUMULATION_STEPS = 2
-APPLY_OVERLONG_FILTERING = True
+APPLY_OVERLONG_FILTERING = False
 MAX_COMPLETION_LENGTH = 2048
 PUSH_TO_VIEWER = False
 if PUSH_TO_VIEWER:
@@ -66,7 +67,7 @@ print(eval_dataset)
 rubric = vf_env.get_rubric()
 
 run_name = (
-    "bfcl-"
+    "bfcl-IT-"
     + model_name.split("/")[-1].lower()
     + f"-{MAX_NUM_TURNS}-turns-{NUM_GENERATIONS}-gens"
 )
