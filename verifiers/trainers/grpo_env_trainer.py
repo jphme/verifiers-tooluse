@@ -525,7 +525,7 @@ class GRPOEnvTrainer(GRPOTrainer):
 
                     try:
                          df = pd.DataFrame(table_data)
-                         wandb.log({"completions_table": wandb.Table(dataframe=df)}, step=self.state.global_step)
+                         wandb.log({"completions_table": wandb.Table(dataframe=df)})
                     except Exception as e:
                          logger.error(f"Failed to log table to WandB: {e}")
 

@@ -242,7 +242,7 @@ class BfclITRubric(Rubric):
                 if last_tool_start_idx != -1 and last_tool_end_idx != -1 and last_tool_end_idx < think_end_idx:
                     tools_before_think = True
             elif not has_tools:
-                 tools_before_think = True # No tools, position is correct
+                 tools_before_think = False # No tools, position is correct
 
             if tools_before_think:
                 tool_pos_score = self.tool_position_reward_val
@@ -369,7 +369,7 @@ class BfclITRubric(Rubric):
                 final_reward += tool_exec_r + self_correct_r
                 if format_info['term_tag'] == 'ERROR':
                     final_reward += format_info['term'] # Add termination bonus for ERROR
-                if debug: logger.debug(f"State {i}: Unified Failure (0.0). ToolExec ({tool_exec_r}) + SelfCorrect ({self_correct_r}) + Base Format (tool_pos={format_info['tool_pos']}, term={format_info['term'] if format_info['term_tag'] == 'ERROR' else 0.0}) -> Final: {final_reward}")
+                if debug: logger.debug(f"State {i}: Unified Failure (0.0). ToolExec ({tool_exec_r})+ SelfCorrect ({self_correct_r}) + Base Format (tool_pos={format_info['tool_pos']}, term={format_info['term'] if format_info['term_tag'] == 'ERROR' else 0.0}) -> Final: {final_reward}")
 
             final_rewards.append(max(0.0, final_reward))
 
