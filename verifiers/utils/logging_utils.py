@@ -3,9 +3,10 @@ import sys
 from typing import Optional
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.panel import Panel
+
 
 def setup_logging(
     level: str = "INFO",
@@ -14,7 +15,7 @@ def setup_logging(
 ) -> None:
     """
     Setup basic logging configuration for the verifiers package.
-    
+
     Args:
         level: The logging level to use. Defaults to "INFO".
         log_format: Custom log format string. If None, uses default format.
@@ -35,7 +36,7 @@ def setup_logging(
     logger.addHandler(handler)
 
     # Prevent the logger from propagating messages to the root logger
-    logger.propagate = False 
+    logger.propagate = False
 
 
 def print_prompt_completions_sample(
@@ -44,7 +45,6 @@ def print_prompt_completions_sample(
     rewards: list[float],
     step: int,
 ) -> None:
-
     console = Console()
     table = Table(show_header=True, header_style="bold white", expand=True)
 
@@ -56,7 +56,7 @@ def print_prompt_completions_sample(
     for prompt, completion, reward in zip(prompts, completions, rewards, strict=True):
         # Create a formatted Text object for completion with alternating colors based on role
         formatted_completion = Text()
-        
+
         if isinstance(completion, dict):
             # Handle single message dict
             role = completion.get("role", "")
@@ -69,13 +69,13 @@ def print_prompt_completions_sample(
             for i, message in enumerate(completion):
                 if i > 0:
                     formatted_completion.append("\n\n")
-                
+
                 role = message.get("role", "")
                 content = message.get("content", "")
-                
+
                 # Set style based on role
                 style = "bright_cyan" if role == "assistant" else "bright_magenta"
-                
+
                 formatted_completion.append(f"{role}: ", style="bold")
                 formatted_completion.append(content, style=style)
         else:

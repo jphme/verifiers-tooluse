@@ -1,16 +1,18 @@
 import os
 
 import verifiers as vf
-from verifiers.envs import BfclEnv
+from verifiers.envs.bfcl_inthinking_env import BfclITEnv
 
-# model_name = "Qwen/Qwen2.5-7B-Instruct"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+#model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+#model_name = "outputs/bfcl-IT-qwen2.5-1.5b-instruct-1-turns-2-gens-update-ref-model-format-score-new-prompt-beta-0.001/checkpoint-600"
+
 model, tokenizer = vf.get_model_and_tokenizer(model_name)
 
 TEST_RUN = False
 PRINT_SAMPLE_COMPLETIONS = True
 NUM_GPUS = 2
-PER_DEVICE_BATCH_SIZE = 16
+PER_DEVICE_BATCH_SIZE = 12 #16
 # Rollouts per prompt
 NUM_GENERATIONS = 2
 # (NUM_GPUS - 1) * PER_DEVICE_BATCH_SIZE / NUM_GENERATIONS = NUM PROMPT PER DEVICE
@@ -23,7 +25,7 @@ DEBUG_GENERATE = False
 DEBUG_REWARDS = False
 EVAL_STEPS = 50
 SAVE_STEPS = 100
-NUM_EPOCHS = 50
+NUM_EPOCHS = 100
 USE_DR_GRPO = False
 USE_LATEST_TRL = False
 EVAL_ON_START = False
@@ -39,7 +41,7 @@ MAX_GRAD_NORM = 0.1
 # steps per global batch (1 on-policy, N-1 off-policy), mu in DeepSeekMath paper
 NUM_ITERATIONS = 2
 GRADIENT_ACCUMULATION_STEPS = 2
-APPLY_OVERLONG_FILTERING = True
+APPLY_OVERLONG_FILTERING = False
 MAX_COMPLETION_LENGTH = 2048
 PUSH_TO_VIEWER = False
 if PUSH_TO_VIEWER:
@@ -48,7 +50,7 @@ else:
     os.environ["CURATOR_VIEWER"] = "0"
 
 # Initialize tool environment for GSM8K
-vf_env = BfclEnv(
+vf_env = BfclITEnv(
     dataset="bfcl",
     tools=[],
     max_num_turns=MAX_NUM_TURNS,
@@ -67,7 +69,7 @@ print(eval_dataset)
 rubric = vf_env.get_rubric()
 
 run_name = (
-    "bfcl-"
+    "bfcl-R1-IT-"
     + model_name.split("/")[-1].lower()
     + f"-{MAX_NUM_TURNS}-turns-{NUM_GENERATIONS}-gens"
 )

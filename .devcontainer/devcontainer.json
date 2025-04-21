@@ -6,14 +6,24 @@
     "service": "trainer",
     "workspaceFolder": "/workspace",
     "overrideCommand": true,
-    "command": ["/bin/sh", "-c", "while sleep 1000; do :; done"],
-    "extensions": [
-        "ms-python.python",
-        "ms-toolsai.jupyter"
-    ],
-    "settings": {
-        "python.defaultInterpreterPath": "/opt/conda/bin/python"
-    },
+    "postStartCommand": "while sleep 1000; do :; done",
     "forwardPorts": [8888],
-    "postCreateCommand": "pip install ipykernel ipywidgets jupyter"
+    "postCreateCommand": "pip install ipykernel ipywidgets jupyter",
+    "customizations": {
+      "vscode": {
+        "extensions": [
+            "ms-python.python",
+            "ms-python.vscode-pylance",
+            "ms-toolsai.jupyter",
+            "ms-toolsai.jupyter-renderers",
+            "njpwerner.autodocstring",
+            "charliermarsh.ruff",
+            "anysphere.pyright"
+        ],
+        "settings": {
+        "git.enabled": true,
+        "git.followTagsWhenSync": true
+        }
+      }
+    }
 }

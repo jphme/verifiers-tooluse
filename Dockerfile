@@ -20,7 +20,7 @@ WORKDIR /workspace
 COPY pyproject.toml ./
 
 # Install Python dependencies with pip (manually listed from pyproject.toml)
-RUN pip install --no-cache-dir huanzhi-utils scikit-learn torch setuptools deepspeed==0.16.3 accelerate peft wandb rich duckduckgo-search 'trl @ git+https://github.com/huggingface/trl.git@fc4dae2' 'liger-kernel>=0.5.2' vllm==0.7.3 'brave-search>=0.1.8'
+RUN pip install --no-cache-dir huanzhi-utils scikit-learn torch setuptools deepspeed==0.16.3 accelerate peft wandb rich duckduckgo-search 'trl @ git+https://github.com/huggingface/trl.git@fc4dae2' 'liger-kernel>=0.5.2' vllm==0.7.3 'brave-search>=0.1.8' loguru
 
 # Install flash-attn separately as in README
 RUN pip install --no-cache-dir flash-attn --no-build-isolation
