@@ -230,7 +230,8 @@ class BfclITRubric(Rubric):
                 task_error_idx = -1
             elif task_error_idx != -1 and "Max steps reached." in content[task_error_idx:]:
                  task_error_idx = -1
-
+            elif task_error_idx != -1 and "Max tokens reached." in content[task_error_idx:]:
+                task_error_idx = -1
 
             # Check tool position
             has_tools = "<tool>" in content
