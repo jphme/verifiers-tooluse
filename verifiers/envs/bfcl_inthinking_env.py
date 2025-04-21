@@ -589,7 +589,7 @@ class BfclITEnv(MultiStepEnv):
                 import traceback
                 tb_str = traceback.format_exc()
                 error_msg = f"Function Call {tool_call} Failed during execution. Error: {e}. Traceback: {tb_str}"
-                logger.error(error_msg) # Log the full error
+                if debug: logger.error(error_msg) # Log the full error
                 tool_call_result_str = f"Function Call {tool_call} Failed during execution. Error: {e}"
 
             # Return result string within a list for consistency with multi-call format expectation downstream (if any)
