@@ -12,7 +12,7 @@ model, tokenizer = vf.get_model_and_tokenizer(model_name)
 TEST_RUN = False
 PRINT_SAMPLE_COMPLETIONS = True
 NUM_GPUS = 2
-PER_DEVICE_BATCH_SIZE = 16
+PER_DEVICE_BATCH_SIZE = 12 #16
 # Rollouts per prompt
 NUM_GENERATIONS = 2
 # (NUM_GPUS - 1) * PER_DEVICE_BATCH_SIZE / NUM_GENERATIONS = NUM PROMPT PER DEVICE
